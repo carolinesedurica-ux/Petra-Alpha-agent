@@ -1,0 +1,140 @@
+{
+  "project_name": "Options Alpha Agent",
+  "app_archetype": "THE PERFORMANCE PRO (Quantitative Tactical Noir)",
+  "context_type": "dashboards_and_admin_panels",
+  "theme": "dark",
+  "summary": "Institutional-grade autonomous AI options trading terminal for defined-risk credit spreads on Alpaca paper account ($100k). High-density Bloomberg Noir meets modern quantitative hedge-fund observability: LLM reasoning gating layer, deterministic risk engine, live payoff diagrams, multi-leg spreads matrix, interactive equity curve, trade history, live agent cycle trigger, and an interactive MCP-style 'Ask the Agent' intelligence panel.",
+  "typography": {
+    "heading_font": "Space Grotesk, Cabinet Grotesk, -apple-system, sans-serif",
+    "body_font": "IBM Plex Sans, Inter, system-ui, sans-serif",
+    "mono_font": "JetBrains Mono, Roboto Mono, monospace",
+    "hierarchy": {
+      "terminal_badge": "text-[11px] font-mono uppercase tracking-[0.2em]",
+      "h1_title": "text-2xl sm:text-3xl font-bold tracking-tight font-sans text-slate-100",
+      "h2_section": "text-lg sm:text-xl font-semibold tracking-tight text-slate-200",
+      "h3_card_title": "text-sm font-semibold tracking-normal uppercase text-slate-400 font-mono",
+      "data_metric_massive": "text-2xl sm:text-3xl font-bold font-mono tracking-tight",
+      "data_metric_regular": "text-lg font-bold font-mono",
+      "table_header": "text-xs font-mono uppercase tracking-wider text-slate-400",
+      "table_cell": "text-xs font-mono text-slate-300",
+      "body_text": "text-sm leading-relaxed text-slate-300",
+      "small_caption": "text-xs text-slate-500 font-mono"
+    }
+  },
+  "colors": {
+    "background": {
+      "main": "#06090e",
+      "card_surface": "#0c111a",
+      "card_surface_elevated": "#121926",
+      "card_inner_well": "#080c13",
+      "border": "rgba(255, 255, 255, 0.08)",
+      "border_accent": "rgba(0, 240, 181, 0.25)"
+    },
+    "accents": {
+      "profit_neon": "#00F0B5",
+      "profit_bg": "rgba(0, 240, 181, 0.12)",
+      "loss_neon": "#FF3B69",
+      "loss_bg": "rgba(255, 59, 105, 0.12)",
+      "signal_cyan": "#00D4FF",
+      "signal_amber": "#FFB800",
+      "signal_purple": "#9D4EDD",
+      "alpaca_brand": "#FFE600"
+    },
+    "neutrals": {
+      "slate_950": "#06090e",
+      "slate_900": "#0c111a",
+      "slate_800": "#151d2c",
+      "slate_700": "#243046",
+      "slate_500": "#64748b",
+      "slate_400": "#94a3b8",
+      "slate_200": "#e2e8f0",
+      "pure_white": "#ffffff"
+    }
+  },
+  "design_rules": {
+    "anti_ai_slop": [
+      "No generic purple centered cards or Vercel clones.",
+      "High-density grid borders: 1px subtle borders (rgba(255,255,255,0.08)) with sharp 4px to 6px radii.",
+      "Every metric has its context: 24h delta, allocation percentage, strike bounds, and Alpaca order ID.",
+      "Never use pure black or low-contrast text. Always provide explicit contrast tags and font-mono for all financial numbers.",
+      "Visual badge hierarchy for credit spread types: Put Credit Spread (Emerald / Bullish), Call Credit Spread (Rose / Bearish), Iron Condor (Cyan / Range-Bound)."
+    ],
+    "interactive_elements": {
+      "run_cycle_button": "Tactical pill or sharp button with animated pulsing radar ping when agent cycle is executing.",
+      "risk_gate_badge": "Deterministic Approval/Rejection tag with visual checklist (Delta <= 0.20, Max Risk <= $2,500, Min Credit >= 30%, DTE 0-3 days, Buying Power buffer >= 25%).",
+      "reasoning_feed": "Chronological audit trail showing LLM structured JSON verdicts alongside deterministic gate validations.",
+      "payoff_visualizer": "Interactive miniature multi-leg payoff graph showing breakeven points, max profit, and max risk for active positions."
+    }
+  },
+  "layout_architecture": {
+    "header": {
+      "brand": "OPTIONS ALPHA AGENT // PRO TERMINAL",
+      "alpaca_badge": "ALPACA PAPER v2 [CONNECTED]",
+      "account_id": "PA3920-PAPER-ALPHA",
+      "market_status": "NYSE / NASDAQ: OPEN (or CLOSED with countdown)",
+      "cycle_status": "AUTONOMOUS CRON: ACTIVE (Every 15m)",
+      "actions": ["Manual Trigger 'Run Agent Cycle'", "Emergency Panic Pause", "Export JSON Audit"]
+    },
+    "grid_structure": "4-column responsive operational grid (Mode B - High Density Grid)",
+    "sections": [
+      {
+        "id": "top_metrics_bar",
+        "description": "4-widget top ribbon: Total Equity ($104,820.50), Day P&L (+$1,450.00 / +1.40%), Open Risk ($4,800 / 4.58% cap), Available Buying Power ($87,420.00), Win Rate (78.4% / 37 Trades)."
+      },
+      {
+        "id": "main_pnl_and_reasoning_split",
+        "description": "Left 8 cols: Equity Growth Curve & Intraday P&L vs SPY benchmark + Active Positions Table. Right 4 cols: Agent Live LLM Decision Engine + 'Ask the Agent' MCP Interactive Panel."
+      },
+      {
+        "id": "open_positions_desk",
+        "description": "Dense tabular matrix of open multi-leg spreads (Underlying, Strategy, Legs [e.g. SPY +500P/-502P], DTE, Entry Credit, Mark, Unrealized P&L $, P&L %, TP Target, Stop Loss, Risk Gate Score, Quick Actions [Close / Payoff Modal])."
+      },
+      {
+        "id": "decision_audit_log",
+        "description": "Tabbed view: (1) LLM Reasoning Stream & Verdicts, (2) Deterministic Risk Gate Audit (PASS/FAIL telemetry), (3) Trade Execution History, (4) Risk Parameters Config."
+      },
+      {
+        "id": "ask_the_agent_chat",
+        "description": "MCP-style conversational drawer/card allowing operator to ask 'Why did you enter SPY 505/510 call spread?', 'What is our current portfolio delta?', 'Simulate a 2% SPY drop'."
+      }
+    ]
+  },
+  "components_spec": {
+    "HeaderTerminal": "src/components/HeaderTerminal.js",
+    "MetricsRibbon": "src/components/MetricsRibbon.js",
+    "EquityChart": "src/components/EquityChart.js",
+    "PositionsTable": "src/components/PositionsTable.js",
+    "AgentReasoningPanel": "src/components/AgentReasoningPanel.js",
+    "RiskGateConfigModal": "src/components/RiskGateConfigModal.js",
+    "SpreadPayoffModal": "src/components/SpreadPayoffModal.js",
+    "AskAgentChat": "src/components/AskAgentChat.js",
+    "TradeHistoryTable": "src/components/TradeHistoryTable.js",
+    "CycleRunnerModal": "src/components/CycleRunnerModal.js"
+  },
+  "data_testid_dictionary": {
+    "app_container": "trading-terminal-root",
+    "btn_run_cycle": "agent-run-cycle-btn",
+    "btn_emergency_pause": "agent-emergency-pause-btn",
+    "btn_open_risk_settings": "open-risk-settings-btn",
+    "btn_ask_agent": "ask-agent-trigger-btn",
+    "metric_total_equity": "metric-total-equity",
+    "metric_day_pnl": "metric-day-pnl",
+    "metric_open_risk": "metric-open-risk",
+    "metric_buying_power": "metric-buying-power",
+    "positions_table": "positions-table",
+    "positions_row_prefix": "position-row-",
+    "btn_close_position_prefix": "btn-close-position-",
+    "reasoning_feed": "agent-reasoning-feed",
+    "verdict_card_prefix": "llm-verdict-card-",
+    "risk_gate_status_prefix": "risk-gate-status-",
+    "chat_input": "agent-chat-input",
+    "chat_submit": "agent-chat-submit",
+    "chat_message_list": "agent-chat-messages",
+    "trade_history_table": "trade-history-table"
+  },
+  "UNIVERSAL GUIDELINES FOR MAIN AGENT": {
+    "general": "Build clean, modular, error-resilient JavaScript (.js/.jsx) components for React. Dark mode by default with Tailwind classes. No unstyled HTML forms; use Lucide-react icons. Provide complete simulated state with Alpaca paper mechanics and interactive state triggers.",
+    "mock_data_integrity": "Provide realistic credit spread data on SPY, QQQ, IWM, NVDA, AAPL, TSLA with actual options leg math (Short strike, Long strike, Credit collected, Max risk = width - credit, DTE 0-3 days).",
+    "state_actions": "Operators can manually trigger simulated agent cycles, configure risk engine sliders, ask custom queries to Claude 4.6 in the MCP chat panel, close active positions, and inspect multi-leg payoff diagrams."
+  }
+}
