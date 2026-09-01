@@ -35,7 +35,7 @@ async def get_config(db):
     doc = await db.config.find_one({"id": "risk_config"}, {"_id": 0})
     if not doc:
         doc = RiskConfig().model_dump()
-        await db.config.insert_one(doc)
+        await db.config.insert_one({**doc})
     return doc
 
 
@@ -43,7 +43,7 @@ async def get_agent_state(db):
     doc = await db.agent_state.find_one({"id": "agent_state"}, {"_id": 0})
     if not doc:
         doc = AgentState().model_dump()
-        await db.agent_state.insert_one(doc)
+        await db.agent_state.insert_one({**doc})
     return doc
 
 

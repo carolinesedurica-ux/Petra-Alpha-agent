@@ -27,10 +27,10 @@ export const HeaderTerminal = ({ account, status, agent, onRunCycle, onPause, on
           </div>
           <div>
             <h1 className="font-display text-base sm:text-lg font-bold tracking-tight text-slate-100 leading-none">
-              OPTIONS ALPHA <span className="text-[#00F0B5]">AGENT</span>
+              PETRA <span className="text-[#00F0B5]">// OPTIONS ALPHA</span>
             </h1>
             <p className="text-[10px] font-mono uppercase tracking-[0.22em] text-slate-500 mt-0.5">
-              PRO TERMINAL // DEFINED-RISK CREDIT SPREADS
+              AUTONOMOUS AGENT // DEFINED-RISK CREDIT SPREADS
             </p>
           </div>
         </div>

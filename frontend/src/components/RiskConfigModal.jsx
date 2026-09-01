@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "./ui/dialog";
 import { Slider } from "./ui/slider";
 import { ShieldCheck } from "lucide-react";
 
@@ -33,6 +33,9 @@ export const RiskConfigModal = ({ open, onOpenChange, config, onSave }) => {
           <DialogTitle className="font-display flex items-center gap-2">
             <ShieldCheck size={18} className="text-[#00F0B5]" /> Deterministic Risk Engine
           </DialogTitle>
+          <DialogDescription className="font-mono text-[11px] text-slate-500">
+            Hard stops applied before any order reaches Alpaca. Presets set the aggressiveness dial.
+          </DialogDescription>
         </DialogHeader>
 
         <div className="flex gap-2 mb-1">

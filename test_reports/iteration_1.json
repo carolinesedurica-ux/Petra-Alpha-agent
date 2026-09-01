@@ -1,0 +1,38 @@
+{
+  "summary": "First-build full test of Petra. Backend: 15 pytest tests across account/positions/trades/decisions/pnl/market/config/agent-cycle/risk-gate/pause/close/chat — 15 passed, 0 failed. Real Claude LLM calls verified via /agent/run-cycle and /chat streaming. Frontend: dashboard root loads, all 6 metric ribbon cards populated, equity chart renders, positions table + close buttons present, RUN AGENT CYCLE triggers a real cycle and produces new verdict cards, all 3 bottom tabs switch, RISK modal opens and Save persists, Ask Petra chat streams a coherent multi-position reply from Claude. Risk-gate correctness verified: all approved decisions honor max_risk<=cap and credit/width>=min; rejected decisions include at least one failing gate check.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/positions/{id}/close", "issue": "Returns 200 with {error: 'position not found or already closed'} for invalid IDs instead of 404. Minor REST semantics."},
+      {"endpoint": "POST /api/agent/run-cycle", "issue": "force defaults to True (payload.get('force', True)); design decision but note that omitting force still forces — spec suggested force=true is explicit."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Bottom tab bar (Trade History view)", "issues": ["Tab labels 'OPEN POSITIONS DESK', 'RISK GATE AUDIT', 'TRADE HISTORY' visually overlap with the underlying table header row below (stacking/z-index/margin). See /app/test_reports/dashboard_after.png. Non-blocking but looks cluttered."]},
+      {"screen": "Risk modal", "issues": ["Radix DialogContent missing aria-describedby (console warning). Accessibility polish only."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Fix visual overlap between bottom tab bar and trade-history table header (design polish).",
+    "Optionally return HTTP 404 for close-position with unknown id instead of 200+error field.",
+    "Add DialogDescription/aria-describedby to Risk modal to remove Radix warning."
+  ],
+  "critical_code_review_comments": [
+    "server.py POST /positions/{id}/close returns 200 for not-found; prefer HTTPException(404).",
+    "server.py agent_run_cycle default force=True — arguably risky; consider default False and let UI pass force=True explicitly (frontend already does).",
+    "engines.py build_spread forces contracts=1 even when risk_budget cannot afford it — relies on risk_gate to reject; acceptable but worth a code comment.",
+    "server.py account() computes day_pnl using day_start_equity from account doc; make sure it is reset on new trading day (not verified here)."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "N/A (no auth)",
+  "seed_data_creation": "Backend auto-seeds via seed_demo() at startup; existing seed used (18 closed trades, ~2 open positions, equity ~$112k). Tests do not create/modify seeded fixtures beyond one open-then-close cycle and a temporary config change (restored).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend URL from frontend/.env, all routes under /api. Real Claude LLM is called by /api/agent/run-cycle and /api/chat — allow 60-120s timeouts. Pytest suite at /app/backend/tests/backend_test.py uses pytest-xdist (loadscope) so TestPositionClose may skip when TestAgentCycle running in parallel consumes/creates positions — re-run standalone with -p no:xdist -o addopts='' if needed (verified passing that way). No auth. All Alpaca calls mocked.",
+  "rca of the issue": "No blocking issues found. Only cosmetic overlap in Trade History tab area — likely a missing margin/padding or absolute-positioned tab bar overlapping content wrapper. Reproduction: open dashboard, click 'TRADE HISTORY' tab; observe tab labels overlap first row header. Mitigation: give the tab bar container a solid background and margin-bottom, or ensure the tab list is not overlaying the scroll region."
+}

@@ -95,7 +95,7 @@ async def get_verdict(snap, cycle_id):
 
 
 CHAT_SYSTEM = (
-    "You are Options Alpha Agent, an autonomous defined-risk options trader on an Alpaca "
+    "You are Petra, an autonomous defined-risk options trader on an Alpaca "
     "paper account. You trade credit spreads (put/call credit spreads, iron condors) gated "
     "by a deterministic risk engine (max 2% risk/trade, max 5 concurrent, min 30% credit-to-width, "
     "delta ~0.20 shorts, 2-7 DTE, TP at 50% of credit, stop at 2x). Answer the operator's "

@@ -98,7 +98,7 @@ function App() {
 
         <div className="term-card overflow-hidden">
           <Tabs defaultValue="decisions" className="w-full">
-            <TabsList className="w-full justify-start bg-transparent border-b border-[var(--border)] rounded-none px-3 h-auto py-0">
+            <TabsList className="w-full justify-start bg-[#0c111a] border-b border-[var(--border)] rounded-none px-3 h-auto py-0 relative z-10">
               {[
                 { v: "decisions", i: ScrollText, l: "Decision Log" },
                 { v: "gate", i: ShieldCheck, l: "Risk Gate Audit" },
@@ -123,7 +123,7 @@ function App() {
         </div>
 
         <footer className="text-center text-[10px] font-mono text-slate-700 py-4">
-          OPTIONS ALPHA AGENT · LLM SIGNAL (CLAUDE 4.6) → DETERMINISTIC STRIKE/SIZE ENGINE → HARD RISK GATE → ALPACA MLEG · PAPER {account?.mode?.toUpperCase()}
+          PETRA · OPTIONS ALPHA AGENT · LLM SIGNAL (CLAUDE 4.6) → DETERMINISTIC STRIKE/SIZE ENGINE → HARD RISK GATE → ALPACA MLEG · PAPER {account?.mode?.toUpperCase()}
         </footer>
       </main>
 

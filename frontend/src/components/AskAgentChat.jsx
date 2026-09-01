@@ -12,7 +12,7 @@ const SUGGESTIONS = [
 
 export const AskAgentChat = ({ height = "540px" }) => {
   const [messages, setMessages] = useState([
-    { role: "agent", text: "Options Alpha Agent online. Ask me about my positions, reasoning, or risk posture." },
+    { role: "agent", text: "Petra online. Ask me about my positions, reasoning, or risk posture." },
   ]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -51,7 +51,7 @@ export const AskAgentChat = ({ height = "540px" }) => {
     <div className="term-card flex flex-col overflow-hidden" style={{ height }}>
       <div className="flex items-center gap-2 px-4 py-3 border-b border-[var(--border)]">
         <Sparkles size={14} className="text-[#00D4FF]" />
-        <h3 className="text-sm font-mono uppercase tracking-wider text-slate-400">Ask The Agent</h3>
+        <h3 className="text-sm font-mono uppercase tracking-wider text-slate-400">Ask Petra</h3>
         <span className="ml-auto text-[10px] font-mono text-slate-600">MCP · CLAUDE 4.6</span>
       </div>
 

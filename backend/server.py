@@ -2,7 +2,7 @@ import os
 import json
 import logging
 
-from fastapi import FastAPI, APIRouter, Body
+from fastapi import FastAPI, APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 
@@ -118,7 +118,7 @@ async def update_config(payload: dict = Body(...)):
 
 @api.post("/agent/run-cycle")
 async def agent_run_cycle(payload: dict = Body(default={})):
-    force = bool(payload.get("force", True))
+    force = bool(payload.get("force", False))
     result = await run_cycle(db, alpaca, force=force)
     return result
 
@@ -135,7 +135,7 @@ async def close_position(position_id: str):
     await mark_positions(db, alpaca)
     p = await db.positions.find_one({"id": position_id, "status": "open"}, {"_id": 0})
     if not p:
-        return {"error": "position not found or already closed"}
+        raise HTTPException(status_code=404, detail="position not found or already closed")
     await alpaca.apply_equity_delta(p["unrealized_pnl"])
     await db.positions.update_one({"id": position_id}, {"$set": {
         "status": "closed", "exit_reason": "manual", "realized_pnl": p["unrealized_pnl"],
