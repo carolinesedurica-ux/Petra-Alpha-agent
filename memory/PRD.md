@@ -38,6 +38,8 @@ Optimized for P&L + a clean write-up/demo for hackathon judges. FastAPI backend 
   risk-gate audit tab, trade history, risk-config presets (conservative/balanced/aggressive),
   streaming "Ask Petra" chat. Tested end-to-end: backend 100%, frontend 100%.
 
+- Hackathon README.md written at /app/README.md (architecture, AI/code split, gate rules, mock→live steps).
+
 ## Backlog / next
 - P1: Wire real Alpaca CLI (needs user paper keys) + `--dry-run` validation path.
 - P1: Optional MCP server layer for external "talk to the agent".
