@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from pricing import bs_price, bs_delta
-from models import now_iso, new_id
+from models import now_iso, new_id, Decision
 
 MODE = os.environ.get("ALPACA_MODE", "mock")
 ET = ZoneInfo("America/New_York")
@@ -60,6 +60,54 @@ def _bs_close_value(p, market):
         price = bs_price(S, leg["strike"], T, iv, leg["option_type"] == "call")
         val += price if leg["side"] == "sell" else -price
     return round(max(0.0, val), 2), remain
+
+
+async def record_snapshot(db, equity, open_positions):
+    m = await db.market.find_one({"id": "market"}, {"_id": 0}) or {"symbols": {}}
+    await db.pnl_snapshots.insert_one({
+        "id": new_id(), "ts": now_iso(), "equity": round(equity, 2),
+        "spy": m["symbols"].get("SPY", {}).get("price"),
+        "open_risk": round(sum(p["max_risk"] for p in open_positions), 2),
+        "open_positions": len(open_positions)})
+
+
+async def log_order(db, meta, payload, result):
+    await db.orders.insert_one({
+        "id": new_id(), "ts": now_iso(), **meta,
+        "order_type": payload.get("type"), "limit_price": payload.get("limit_price"),
+        "qty": int(payload["qty"]), "legs": payload["legs"],
+        "alpaca_order_id": result.get("order_id", ""), "client_order_id": payload.get("client_order_id", ""),
+        "status": result.get("alpaca_status", result["status"]),
+        "filled_price": result.get("filled_credit", result.get("filled_debit", 0.0)) or 0.0})
+
+
+def _open_payload(proposal, cycle_id):
+    legs = [{"symbol": l["symbol"], "ratio_qty": "1", "side": l["side"],
+             "position_intent": "sell_to_open" if l["side"] == "sell" else "buy_to_open"}
+            for l in proposal["legs"]]
+    return {"order_class": "mleg", "type": "limit", "qty": str(proposal["contracts"]),
+            "limit_price": str(_tick(-proposal["credit"])), "time_in_force": "day",
+            "client_order_id": f"petra-{cycle_id}-{new_id()[:8]}", "legs": legs}
+
+
+def _close_payload(position, urgent):
+    legs = [{"symbol": l["symbol"], "ratio_qty": "1", "side": "buy" if l["side"] == "sell" else "sell",
+             "position_intent": "buy_to_close" if l["side"] == "sell" else "sell_to_close"}
+            for l in position["legs"]]
+    payload = {"order_class": "mleg", "qty": str(position["contracts"]), "time_in_force": "day",
+               "client_order_id": f"petra-close-{new_id()[:8]}", "legs": legs}
+    if urgent:
+        payload["type"] = "market"
+    else:
+        payload.update(type="limit", limit_price=str(_tick(position["current_value"] + 0.03)))
+    return payload
+
+
+def _tick(px):
+    """Option limit price increments: $0.01 under $3, $0.05 above."""
+    a = abs(px)
+    a = round(a, 2) if a < 3 else round(round(a / 0.05) * 0.05, 2)
+    return a if px >= 0 else -a
 
 
 class MockAlpaca:
@@ -168,23 +216,25 @@ class MockAlpaca:
         return best
 
     # ---------- orders ----------
+    async def reconcile(self, open_positions):
+        return []
+
     async def place_mleg(self, proposal, cycle_id=""):
         """Instant fill at mid; credit lands in cash."""
         await self.apply_equity_delta(proposal["credit"] * 100 * proposal["contracts"])
-        return {"order_id": f"mock-{new_id()[:8]}", "status": "filled", "filled_credit": proposal["credit"]}
+        res = {"order_id": f"mock-{new_id()[:8]}", "status": "filled", "filled_credit": proposal["credit"]}
+        await log_order(self.db, {"intent": "open", "underlying": proposal["underlying"], "strategy": proposal["strategy"],
+                                  "cycle_id": cycle_id, "mode": "mock"}, _open_payload(proposal, cycle_id), res)
+        return res
 
-    async def close_mleg(self, position, urgent=False):
+    async def close_mleg(self, position, urgent=False, reason=""):
         debit = position["current_value"]
         realized = round((position["credit"] - debit) * 100 * position["contracts"], 2)
         await self.apply_equity_delta(realized)
-        return {"order_id": f"mock-{new_id()[:8]}", "status": "filled", "filled_debit": debit}
-
-
-def _tick(px):
-    """Option limit price increments: $0.01 under $3, $0.05 above."""
-    a = abs(px)
-    a = round(a, 2) if a < 3 else round(round(a / 0.05) * 0.05, 2)
-    return a if px >= 0 else -a
+        res = {"order_id": f"mock-{new_id()[:8]}", "status": "filled", "filled_debit": debit}
+        await log_order(self.db, {"intent": "close", "underlying": position["underlying"], "strategy": position["strategy"],
+                                  "reason": reason, "position_id": position["id"], "mode": "mock"}, _close_payload(position, urgent), res)
+        return res
 
 
 class LiveAlpaca:
@@ -199,6 +249,7 @@ class LiveAlpaca:
             "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET"],
             "Accept": "application/json"}, timeout=20)
         self._chains = {}
+        self._last_reconcile = None
 
     async def _req(self, method, base, path, **kwargs):
         r = await self.http.request(method, base + path, **kwargs)
@@ -232,8 +283,7 @@ class LiveAlpaca:
             await self.advance_market()
         if await self.db.pnl_snapshots.count_documents({}) == 0:
             acc = await self.get_account()
-            await self.db.pnl_snapshots.insert_one({"id": new_id(), "ts": now_iso(), "equity": acc["equity"],
-                                                    "open_risk": 0.0, "open_positions": 0})
+            await record_snapshot(self.db, acc["equity"], [])
 
     async def market_open(self):
         clock = await self._req("GET", self.trading, "/clock")
@@ -249,11 +299,60 @@ class LiveAlpaca:
         acc = await self._fetch_account()
         last = await self.db.pnl_snapshots.find_one({}, sort=[("ts", -1)])
         if not last or (datetime.now(timezone.utc) - datetime.fromisoformat(last["ts"])).total_seconds() > 300:
-            await self.db.pnl_snapshots.insert_one({
-                "id": new_id(), "ts": now_iso(), "equity": acc["equity"],
-                "open_risk": round(sum(p["max_risk"] for p in open_positions), 2),
-                "open_positions": len(open_positions)})
+            await record_snapshot(self.db, acc["equity"], open_positions)
         return acc["equity"], acc["buying_power"]
+
+    # ---------- reconciliation ----------
+    async def reconcile(self, open_positions, force=False):
+        """Compare DB spreads with Alpaca /positions; close stale rows, flag mismatches & orphans."""
+        now = datetime.now(timezone.utc)
+        if not force and self._last_reconcile and (now - self._last_reconcile).total_seconds() < 60:
+            return []
+        self._last_reconcile = now
+        live = await self._req("GET", self.trading, "/positions")
+        held = {x["symbol"]: float(x["qty"]) for x in live}
+        events = []
+        ours = set()
+        for p in open_positions:
+            syms = [l["symbol"] for l in p["legs"]]
+            ours.update(syms)
+            present = [s for s in syms if s in held]
+            if len(present) == len(syms):
+                continue
+            if present:
+                if not p.get("reconcile_warned"):
+                    await self.db.positions.update_one({"id": p["id"]}, {"$set": {"reconcile_warned": True}})
+                    await self.db.decisions.insert_one(Decision(
+                        cycle_id="reconcile", underlying=p["underlying"], strategy=p["strategy"], outcome="error",
+                        reason=f"RECONCILE: only {len(present)}/{len(syms)} legs found at Alpaca — partial fill/assignment? Review manually.",
+                        position_id=p["id"]).model_dump())
+                continue
+            expired = datetime.fromisoformat(p["expiry_ts"]) < now
+            stock_qty = held.get(p["underlying"], 0.0)
+            if expired and not stock_qty:
+                reason, realized = "expired", round(p["credit"] * 100 * p["contracts"], 2)
+            elif stock_qty:
+                reason, realized = "assigned", round(p.get("unrealized_pnl", 0.0), 2)
+            else:
+                reason, realized = "external_close", round(p.get("unrealized_pnl", 0.0), 2)
+            await self.db.positions.update_one({"id": p["id"]}, {"$set": {
+                "status": "closed", "exit_reason": reason, "realized_pnl": realized, "closed_at": now_iso()}})
+            await self.db.decisions.insert_one(Decision(
+                cycle_id="reconcile", underlying=p["underlying"], strategy=p["strategy"],
+                outcome="approved", gate_passed=True,
+                reason=f"RECONCILE [{reason}] legs no longer at Alpaca — row closed, est. realized ${realized:+,.0f}"
+                       + (f"; stock position {stock_qty:+.0f} sh detected" if stock_qty else ""),
+                position_id=p["id"]).model_dump())
+            events.append({"underlying": p["underlying"], "reason": reason, "pnl": realized})
+        orphans = [x for x in live if x.get("asset_class") == "us_option" and x["symbol"] not in ours]
+        for x in orphans:
+            if await self.db.reconcile_seen.find_one({"symbol": x["symbol"]}):
+                continue
+            await self.db.reconcile_seen.insert_one({"symbol": x["symbol"], "ts": now_iso()})
+            await self.db.decisions.insert_one(Decision(
+                cycle_id="reconcile", underlying=x.get("symbol", "")[:6].rstrip("0123456789"), outcome="error",
+                reason=f"RECONCILE: Alpaca holds {x['symbol']} qty {x['qty']} that Petra did not open — not managed by the agent.").model_dump())
+        return events
 
     # ---------- market data ----------
     async def get_market(self):
@@ -406,35 +505,31 @@ class LiveAlpaca:
         o = await self._req("GET", self.trading, f"/orders/{order_id}")
         return o
 
-    async def _submit(self, payload):
-        o = await self._req("POST", self.trading, "/orders", json=payload)
+    async def _submit(self, payload, meta):
+        try:
+            o = await self._req("POST", self.trading, "/orders", json=payload)
+        except RuntimeError as e:
+            res = {"order_id": "", "status": "error", "alpaca_status": "rejected", "filled_price": 0.0, "error": str(e)[:300]}
+            await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+            return res
         o = await self._await_fill(o["id"])
         px = abs(float(o.get("filled_avg_price") or 0))
-        return {"order_id": o["id"], "status": o["status"] if o["status"] == "filled" else "unfilled",
-                "alpaca_status": o["status"], "filled_price": px}
+        res = {"order_id": o["id"], "status": o["status"] if o["status"] == "filled" else "unfilled",
+               "alpaca_status": o["status"], "filled_price": px}
+        await log_order(self.db, meta, payload, res)
+        return res
 
     async def place_mleg(self, proposal, cycle_id=""):
-        legs = [{"symbol": l["symbol"], "ratio_qty": "1", "side": l["side"],
-                 "position_intent": "sell_to_open" if l["side"] == "sell" else "buy_to_open"}
-                for l in proposal["legs"]]
-        payload = {"order_class": "mleg", "type": "limit", "qty": str(proposal["contracts"]),
-                   "limit_price": str(_tick(-proposal["credit"])), "time_in_force": "day",
-                   "client_order_id": f"petra-{cycle_id}-{new_id()[:8]}", "legs": legs}
-        res = await self._submit(payload)
+        res = await self._submit(_open_payload(proposal, cycle_id), {
+            "intent": "open", "underlying": proposal["underlying"], "strategy": proposal["strategy"],
+            "cycle_id": cycle_id, "mode": "live"})
         res["filled_credit"] = res.pop("filled_price")
         return res
 
-    async def close_mleg(self, position, urgent=False):
-        legs = [{"symbol": l["symbol"], "ratio_qty": "1", "side": "buy" if l["side"] == "sell" else "sell",
-                 "position_intent": "buy_to_close" if l["side"] == "sell" else "sell_to_close"}
-                for l in position["legs"]]
-        payload = {"order_class": "mleg", "qty": str(position["contracts"]), "time_in_force": "day",
-                   "client_order_id": f"petra-close-{new_id()[:8]}", "legs": legs}
-        if urgent:
-            payload["type"] = "market"
-        else:
-            payload.update(type="limit", limit_price=str(_tick(position["current_value"] + 0.03)))
-        res = await self._submit(payload)
+    async def close_mleg(self, position, urgent=False, reason=""):
+        res = await self._submit(_close_payload(position, urgent), {
+            "intent": "close", "underlying": position["underlying"], "strategy": position["strategy"],
+            "reason": reason, "position_id": position["id"], "mode": "live"})
         res["filled_debit"] = res.pop("filled_price")
         return res
 

@@ -87,14 +87,14 @@ class RiskConfig(BaseModel):
     id: str = "risk_config"
     max_risk_pct: float = 2.0
     max_concurrent: int = 5
-    min_credit_width: float = 0.18
+    min_credit_width: float = 0.15
     target_delta: float = 0.22
     dte_min: int = 3
     dte_max: int = 7
     tp_pct: float = 0.50
     stop_mult: float = 2.0
-    max_bid_ask_pct: float = 0.15
-    min_open_interest: int = 500
+    max_bid_ask_pct: float = 0.20
+    min_open_interest: int = 150
     aggressiveness: str = "balanced"
 
 

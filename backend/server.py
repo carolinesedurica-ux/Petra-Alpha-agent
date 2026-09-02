@@ -100,7 +100,16 @@ async def decisions(limit: int = 60):
 @api.get("/pnl")
 async def pnl():
     snaps = await db.pnl_snapshots.find({}, {"_id": 0}).sort("ts", 1).to_list(2000)
+    acc = await alpaca.get_account()
+    base = next((s["spy"] for s in snaps if s.get("spy")), None)
+    for s in snaps:
+        s["benchmark"] = round(acc["initial_equity"] * s["spy"] / base, 2) if base and s.get("spy") else None
     return snaps
+
+
+@api.get("/orders")
+async def orders(limit: int = 100):
+    return await db.orders.find({}, {"_id": 0}).sort("ts", -1).to_list(limit)
 
 
 @api.get("/market")
@@ -117,7 +126,8 @@ async def market():
 @api.get("/status")
 async def status():
     st = await get_agent_state(db)
-    return {"agent": st, "market": market_status(), "mode": alpaca.mode, "cycle_seconds": CYCLE_SECONDS}
+    return {"agent": st, "market": market_status(), "mode": alpaca.mode, "cycle_seconds": CYCLE_SECONDS,
+            "last_reconcile": getattr(alpaca, "_last_reconcile", None)}
 
 
 @api.get("/config")

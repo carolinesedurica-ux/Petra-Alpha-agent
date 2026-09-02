@@ -5,7 +5,7 @@ import { Toaster, toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   getAccount, getPositions, getTrades, getDecisions, getPnl, getStatus,
-  getConfig, updateConfig, runCycle, pauseAgent, closePosition,
+  getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders,
 } from "@/lib/api";
 import { HeaderTerminal } from "@/components/HeaderTerminal";
 import { MetricsRibbon } from "@/components/MetricsRibbon";
@@ -16,7 +16,8 @@ import { AskAgentChat } from "@/components/AskAgentChat";
 import { RiskConfigModal } from "@/components/RiskConfigModal";
 import { SpreadPayoffModal } from "@/components/SpreadPayoffModal";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
-import { ScrollText, ShieldCheck, History } from "lucide-react";
+import { OrderBlotter } from "@/components/OrderBlotter";
+import { ScrollText, ShieldCheck, History, Receipt } from "lucide-react";
 
 const useLive = (key, fn, interval = 8000) =>
   useQuery({ queryKey: [key], queryFn: fn, refetchInterval: interval });
@@ -28,6 +29,7 @@ function App() {
   const { data: trades } = useLive("trades", getTrades, 12000);
   const { data: decisions } = useLive("decisions", getDecisions, 6000);
   const { data: pnl } = useLive("pnl", getPnl, 12000);
+  const { data: orders } = useLive("orders", getOrders, 6000);
   const { data: status } = useLive("status", getStatus, 6000);
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
 
@@ -36,7 +38,7 @@ function App() {
   const [closingId, setClosingId] = useState(null);
 
   const refetchAll = () =>
-    ["account", "positions", "trades", "decisions", "pnl", "status"].forEach((k) =>
+    ["account", "positions", "trades", "decisions", "pnl", "status", "orders"].forEach((k) =>
       qc.invalidateQueries({ queryKey: [k] })
     );
 
@@ -85,7 +87,7 @@ function App() {
         <MetricsRibbon account={account} />
 
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
-          <div className="xl:col-span-8 space-y-5">
+          <div className="xl:col-span-8 flex flex-col gap-5 min-w-0">
             <EquityChart pnl={pnl} initialEquity={account?.initial_equity || 100000} />
             <PositionsTable positions={positions} onClose={(id) => closeMut.mutate(id)}
               onPayoff={(p) => setPayoff(p)} closingId={closingId} />
@@ -103,8 +105,9 @@ function App() {
                 { v: "decisions", i: ScrollText, l: "Decision Log" },
                 { v: "gate", i: ShieldCheck, l: "Risk Gate Audit" },
                 { v: "history", i: History, l: "Trade History" },
+                { v: "orders", i: Receipt, l: "Order Blotter" },
               ].map((t) => (
-                <TabsTrigger key={t.v} value={t.v}
+                <TabsTrigger key={t.v} value={t.v} data-testid={`tab-${t.v}`}
                   className="data-[state=active]:bg-transparent data-[state=active]:text-[#00F0B5] data-[state=active]:border-b-2 data-[state=active]:border-[#00F0B5] rounded-none text-slate-500 font-mono text-xs uppercase tracking-wider py-3 px-3 -mb-px">
                   <t.i size={13} className="mr-1.5" /> {t.l}
                 </TabsTrigger>
@@ -118,6 +121,9 @@ function App() {
             </TabsContent>
             <TabsContent value="history" className="mt-0">
               <TradeHistoryTable trades={trades} />
+            </TabsContent>
+            <TabsContent value="orders" className="mt-0">
+              <OrderBlotter orders={orders} />
             </TabsContent>
           </Tabs>
         </div>

@@ -3,7 +3,7 @@ import random
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-from alpaca import UNIVERSE
+from alpaca import UNIVERSE, record_snapshot
 from engines import build_spread, risk_gate
 from llm import get_verdict
 from models import Position, Decision, RiskConfig, AgentState, now_iso, new_id
@@ -49,6 +49,8 @@ async def get_agent_state(db):
 async def mark_positions(db, alpaca):
     market = await alpaca.get_market()
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    if open_pos and await alpaca.reconcile(open_pos):
+        open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     marks = await alpaca.close_values(open_pos, market) if open_pos else {}
     for p in open_pos:
         close_val, remain = marks[p["id"]]
@@ -82,7 +84,7 @@ async def manage_positions(db, alpaca, cfg, cycle_id):
 
 async def close_position(db, alpaca, p, reason, cycle_id):
     """Route a closing mleg order (market if urgent); persist only on fill."""
-    res = await alpaca.close_mleg(p, urgent=reason != "take_profit")
+    res = await alpaca.close_mleg(p, urgent=reason != "take_profit", reason=reason)
     if res["status"] != "filled":
         await db.decisions.insert_one(Decision(
             cycle_id=cycle_id, underlying=p["underlying"], strategy=p["strategy"], outcome="error",
@@ -226,10 +228,7 @@ async def run_cycle(db, alpaca, force=False):
     # 4. recompute equity + snapshot P&L
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     equity, bp = await alpaca.recompute_equity(open_pos)
-    await db.pnl_snapshots.insert_one({
-        "id": new_id(), "ts": now_iso(), "equity": equity,
-        "open_risk": round(sum(p["max_risk"] for p in open_pos), 2),
-        "open_positions": len(open_pos)})
+    await record_snapshot(db, equity, open_pos)
     await _bump_cycle(db, state)
 
     return {"cycle_id": cycle_id, "status": "ran", "market": mkt,

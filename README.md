@@ -57,6 +57,8 @@ Presets (`conservative` / `balanced` / `aggressive`) adjust these knobs from the
 - **Agent reasoning feed** — Claude's rationale + risk-gate pass/fail per cycle
 - **Risk gate audit** — every check, every cycle
 - **Trade history** — closed trades with exit reason
+- **Order blotter** — every mleg order routed to Alpaca: legs, qty, limit, fill price, status, order id
+- **SPY benchmark** — buy-and-hold SPY line on the equity chart with a live edge readout
 - **Ask Petra** — streaming chat grounded in live account/position state (MCP-style "talk to the agent")
 
 ## 4. Project layout
@@ -86,7 +88,8 @@ frontend/src/
 | GET | `/api/positions` | open positions with live marks |
 | GET | `/api/trades` | closed trade history |
 | GET | `/api/decisions` | reasoning log + risk-gate telemetry |
-| GET | `/api/pnl` | equity curve snapshots |
+| GET | `/api/pnl` | equity curve snapshots + SPY benchmark |
+| GET | `/api/orders` | order blotter |
 | GET | `/api/market` | universe snapshot |
 | GET | `/api/status` | market hours, agent state, last cycle |
 | GET / PUT | `/api/config` | risk configuration |
@@ -133,4 +136,5 @@ so mock data never mixes with the real account.
 - **Defined risk only.** Every position is a spread; max loss is known at entry and enforced before order.
 - **Idempotent cycles.** Duplicate underlyings are rejected; each cycle has an id stamped on every artifact.
 - **Fail closed.** LLM error, schema violation, chain fetch failure, gate failure, or an unfilled order → no position, decision logged.
+- **Reconciled.** Every mark compares Petra's spreads with Alpaca `/positions`; expired/assigned/externally-closed legs close the row and are logged, orphan positions are flagged.
 - **Full audit trail.** Prompt, verdict, gate checks, order and exit reason are all stored in MongoDB and rendered live.

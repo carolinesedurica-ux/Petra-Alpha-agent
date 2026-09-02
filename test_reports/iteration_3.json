@@ -1,0 +1,32 @@
+{
+  "summary": "Iteration 3 — validated the 4 new features (Position Reconciliation, Balanced preset tuning, SPY benchmark line, Order Blotter) plus the layout fix. Backend: extended /app/backend/tests/backend_test.py with 5 new tests (test_pnl_has_benchmark, test_balanced_defaults, status.last_reconcile assertion, TestOrders x2, TestReconcile) — full suite 19/19 passed in ~30s against LIVE Alpaca paper (mode=live, PA39X74UN8VF). GET /api/orders returns list w/ full shape (intent, underlying, strategy, qty, order_type, limit_price as string with negative value for credit opens, legs[symbol/side/position_intent], alpaca_order_id, client_order_id, status, filled_price, ts) and >=1 pre-existing row. GET /api/pnl now emits benchmark on every snapshot (null-safe) — later snapshots carry spy≈760 and benchmark≈$100k. GET /api/status includes last_reconcile (null — no open positions currently). GET /api/config Balanced defaults = min_open_interest 150 / max_bid_ask_pct 0.20 / min_credit_width 0.15 as required. Forced /api/agent/run-cycle completed in ~10s, all decisions had valid outcomes, no orphan positions. Frontend smoke via Playwright at REACT_APP_BACKEND_URL: terminal loads, equity-chart-card renders with 'Petra equity' + 'SPY buy & hold' legends, benchmark-edge shows 'vs SPY $100,000 · edge +$0'. All 4 tabs present (tab-decisions/gate/history/orders); clicking tab-orders reveals order-blotter-table with correct 11 headers and 2 TSLA CALL CREDIT / OPEN / LIMIT $-0.80 / CANCELED rows. Risk modal preset buttons (conservative/balanced/aggressive) all clickable and update visible fields (Min Credit-to-Width 0.15× confirmed for balanced). Run Agent Cycle button triggers cycle (button shows 'RUNNING CYCLE...'). Layout: chart bottom y=1124 sits above tab-orders y=1341 — Open Positions Desk sits between them, no overlap. Zero console/page errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Equity chart", "issues": ["When SPY buy&hold benchmark equals current equity (flat fresh account), the dashed SPY line visually coincides with the equity line — legend still helpful but the two curves are indistinguishable until PnL diverges. Cosmetic only."]},
+      {"screen": "Risk config modal", "issues": ["min_open_interest and max_bid_ask_pct are updated by the preset buttons in state but there are no visible sliders for them in FIELDS — user can only observe them via network payload. Consider surfacing OI & Bid-Ask sliders for transparency."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py /api/pnl computes benchmark on the fly in a hot loop from every snapshot — for 2000-doc default this is trivial but consider caching base_spy or storing benchmark at snapshot-time in alpaca.record_snapshot() so historical data is stable if initial_equity ever changes.",
+    "alpaca.log_order pulls filled_price from result.get('filled_credit', result.get('filled_debit', 0.0)) — for canceled orders both are absent so filled_price=0.0 which the blotter renders as '—' correctly, but 0.0 vs null is ambiguous. Consider storing None on non-filled statuses.",
+    "RiskConfigModal FIELDS array lacks entries for min_open_interest & max_bid_ask_pct even though PRESETS mutate them — user cannot tune these live without a backend call. Add sliders to FIELDS.",
+    "OrderBlotter legLabel regex expects OCC 21-char (^([A-Z]+)(\\d{6})([CP])(\\d{8})$) — for tickers with digits (e.g. UBER symbols aren't in universe but SPY→SPY) works; consider tolerating a leading period or 5-char root defensively.",
+    "server.py startup schedules autonomous_loop() but the loop sleeps CYCLE_SECONDS (900s) before first run — same finding as iteration_2, still not addressed."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (19/19)", "frontend": "100%"},
+  "test_credentials": "N/A (no auth). Alpaca paper keys in /app/backend/.env (untouched).",
+  "seed_data_creation": "None. Test only mutated min_open_interest 300→restored via /api/config roundtrip. One forced cycle ran (no positions opened).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "ALPACA_MODE=live in /app/backend/.env — DO NOT change. Account PA39X74UN8VF. Backend suite at /app/backend/tests/backend_test.py now has 19 tests covering all 4 new features plus prior coverage; run with `pytest tests/backend_test.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. Order blotter has 2 TSLA canceled rows persisted from prior forced cycles — this count grows with each forced cycle during closed market. Frontend testids: tab-orders, tab-decisions, tab-gate, tab-history, order-blotter-table, order-row-{id}, equity-chart-card, benchmark-edge, open-risk-settings-btn, agent-run-cycle-btn, agent-emergency-pause-btn, trading-terminal-root, metric-total-equity. Risk modal preset buttons are plain buttons with lowercase text ('balanced' etc), no testid.",
+  "rca of the issue": "No blocking issues found. All 4 requested features working end-to-end (backend + frontend + integration). Two minor design observations captured for main agent's optional attention: (a) SPY benchmark line coincides with equity line on fresh flat account — self-resolves as PnL diverges; (b) preset buttons mutate OI/bid-ask/credit-width but only credit-width has a visible slider — main agent may want to add OI & Bid-Ask sliders to RiskConfigModal FIELDS."
+}

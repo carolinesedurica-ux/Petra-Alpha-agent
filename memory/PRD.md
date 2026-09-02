@@ -46,8 +46,15 @@ Optimized for P&L + a clean write-up/demo for hackathon judges. FastAPI backend 
   Alpaca /clock, mode-switch wipes mock data. Day P&L = equity - Alpaca last_equity (auto daily reset in live).
   Tested: iteration_2 backend 14/14 + frontend smoke pass.
 
+- 2026-09-02 (2): Position reconciliation vs Alpaca /positions (expired/assigned/external_close rows auto-closed,
+  partial-leg + orphan warnings in decision log, throttled 60s, runs on every mark), live preset tuning
+  (Balanced OI≥150 / bid-ask≤20% / credit-width≥15%; Conservative 300/12%/18%; Aggressive 50/30%/12%),
+  SPY buy-and-hold benchmark line + edge readout on the equity chart (snapshots store spy; /api/pnl adds
+  benchmark), Order Blotter tab (db.orders via log_order for every open/close mleg; GET /api/orders),
+  fixed left-column overflow (chart flex-1). Tested: iteration_3 backend 19/19 + frontend pass.
+
 ## Backlog / next
 - P1: Optional MCP server layer for external "talk to the agent".
-- P2: SPY benchmark overlay on equity chart. Reconcile DB positions vs Alpaca /positions (expiry/assignment).
-- P2: Balanced preset min_open_interest=500 rejects many real near-dated legs — consider tuning presets for live chains.
+- P2: Reconcile realized P&L for assigned/external closes uses last mark (estimate) — could pull Alpaca account activities for exact fills.
+- P2: Optional news/sentiment feed for the LLM prompt (currently 'no news feed wired' in live).
 - P2: Per-underlying IV term structure & earnings calendar gate.

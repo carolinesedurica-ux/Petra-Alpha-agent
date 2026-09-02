@@ -61,6 +61,10 @@ class TestBasics:
         assert d["cycle_seconds"] == 900
         assert "agent" in d and "market" in d
         assert "open" in d["market"]
+        # New: last_reconcile field must exist (null or ISO datetime)
+        assert "last_reconcile" in d
+        lr = d["last_reconcile"]
+        assert lr is None or isinstance(lr, str)
 
     def test_market_live(self, client):
         r = client.get(f"{API}/market", timeout=30)
@@ -82,6 +86,21 @@ class TestBasics:
         d = r.json()
         assert isinstance(d, list) and len(d) >= 1
         assert "equity" in d[0] and "ts" in d[0]
+
+    def test_pnl_has_benchmark(self, client):
+        """Newer snapshots must carry spy + benchmark; older ones may be null (acceptable)."""
+        d = client.get(f"{API}/pnl", timeout=30).json()
+        # Every snapshot must at least have the keys present after the benchmark loop
+        for s in d:
+            assert "benchmark" in s, "benchmark key missing"
+        with_spy = [s for s in d if s.get("spy")]
+        assert len(with_spy) >= 1, "no snapshot has spy price"
+        # SPY price sanity
+        assert 500 < with_spy[-1]["spy"] < 1000, f"SPY price {with_spy[-1]['spy']} looks wrong"
+        # Benchmark should be numeric and ~= initial equity when spy == base_spy
+        for s in with_spy:
+            assert isinstance(s["benchmark"], (int, float))
+            assert 50000 < s["benchmark"] < 300000
 
     def test_positions(self, client):
         r = client.get(f"{API}/positions", timeout=30)
@@ -107,6 +126,15 @@ class TestConfig:
         d = r.json()
         assert "min_open_interest" in d
         assert "max_concurrent" in d
+
+    def test_balanced_defaults(self, client):
+        """Balanced preset tuning: OI=150, bid-ask=0.20, credit-width=0.15."""
+        d = client.get(f"{API}/config", timeout=30).json()
+        # Only assert defaults if aggressiveness is balanced (may be modified from prior tests)
+        if d.get("aggressiveness") == "balanced":
+            assert d["min_open_interest"] == 150, d["min_open_interest"]
+            assert abs(d["max_bid_ask_pct"] - 0.20) < 1e-6, d["max_bid_ask_pct"]
+            assert abs(d["min_credit_width"] - 0.15) < 1e-6, d["min_credit_width"]
 
     def test_update_config_roundtrip(self, client):
         orig = client.get(f"{API}/config", timeout=30).json()
@@ -184,7 +212,55 @@ class TestAgentCycle:
         assert new_pos_ids.issubset(approved_pids), f"orphan positions: {new_pos_ids - approved_pids}"
 
 
-# -------- Chat streaming --------
+# -------- Orders (Order Blotter) --------
+class TestOrders:
+    def test_orders_list(self, client):
+        r = client.get(f"{API}/orders", timeout=30)
+        assert r.status_code == 200
+        d = r.json()
+        assert isinstance(d, list)
+        # Task states at least 1 order should already exist (TSLA canceled open)
+        assert len(d) >= 1, "expected at least 1 pre-existing order"
+
+    def test_order_shape(self, client):
+        d = client.get(f"{API}/orders", timeout=30).json()
+        for o in d:
+            for k in ("id", "ts", "intent", "underlying", "strategy", "qty",
+                      "order_type", "legs", "alpaca_order_id", "client_order_id",
+                      "status", "filled_price"):
+                assert k in o, f"missing {k} in order {o.get('id')}"
+            assert o["intent"] in {"open", "close"}, o["intent"]
+            assert isinstance(o["legs"], list) and len(o["legs"]) >= 1
+            for leg in o["legs"]:
+                assert "symbol" in leg and "side" in leg and "position_intent" in leg
+            assert isinstance(o["qty"], int)
+            # limit_price is a string when set, negative on credit opens
+            if o.get("limit_price") is not None:
+                assert isinstance(o["limit_price"], str)
+                # credit opens carry a negative limit price like '-0.8'
+                if o["intent"] == "open" and o["order_type"] == "limit":
+                    try:
+                        lp = float(o["limit_price"])
+                        assert lp < 0, f"credit open should have negative limit_price, got {lp}"
+                    except ValueError:
+                        pass
+            # no ObjectId leak
+            assert "_id" not in o
+
+
+# -------- Reconcile smoke (no open positions to exercise, just endpoint stability) --------
+class TestReconcile:
+    def test_endpoints_still_work_after_positions_call(self, client):
+        # /positions triggers a reconcile when there are open positions
+        r = client.get(f"{API}/positions", timeout=30)
+        assert r.status_code == 200
+        # Follow-up: trades + decisions remain 200
+        assert client.get(f"{API}/trades", timeout=30).status_code == 200
+        assert client.get(f"{API}/decisions", timeout=30).status_code == 200
+        # status still returns and last_reconcile is null or ISO
+        st = client.get(f"{API}/status", timeout=30).json()
+        assert "last_reconcile" in st
+
 class TestChat:
     def test_chat_streams(self, client):
         r = client.post(f"{API}/chat", json={"message": "How is the account looking?", "session_id": "test-live"},
