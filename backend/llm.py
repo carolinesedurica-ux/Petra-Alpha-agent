@@ -78,9 +78,10 @@ async def get_verdict(snap, cycle_id):
         f"- Underlying: {snap['symbol']}\n"
         f"- Price: {snap['price']} (prev {snap['prev_price']}, {snap['change_pct']:+.2f}% intraday)\n"
         f"- Implied volatility: {snap['iv']:.0%}\n"
-        f"- 5-step trend bias: {snap['trend']:+.2f}%/day\n"
+        f"- {snap.get('trend_label', '5-step trend bias')}: {snap['trend']:+.2f}%\n"
         f"- News/sentiment: {snap['sentiment']}\n"
-        "Return the JSON verdict."
+        + (f"- Target expiry: {snap['expiry']}\n" if snap.get("expiry") else "")
+        + "Return the JSON verdict."
     )
     try:
         raw = await _complete(SIGNAL_SYSTEM, prompt, f"signal-{cycle_id}-{snap['symbol']}")

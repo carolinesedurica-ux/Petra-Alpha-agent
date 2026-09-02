@@ -7,15 +7,14 @@ Optimized for P&L + a clean write-up/demo for hackathon judges. FastAPI backend 
 
 ## User choices
 - LLM: **Claude Sonnet 4.6** (Emergent Universal Key)
-- Alpaca: **MOCK layer** now (real CLI wrapper stubbed; keys swap in via ALPACA_MODE=cli)
+- Alpaca: **LIVE paper via REST** (ALPACA_MODE=live, keys in backend/.env; MockAlpaca still available via ALPACA_MODE=mock). User chose REST-over-Python, real IEX + indicative options data, no dry-run.
 - Risk: **Balanced** (2% risk/trade, max 5 concurrent, 18% min credit-to-width, Δ~0.22, 3 DTE)
 - Include **MCP-style "Ask Petra"** chat panel
 
 ## Architecture
 - **Backend (FastAPI, /app/backend)**: `server.py` (routes), `agent.py` (cycle orchestration,
   position mgmt, market hours, demo seed), `engines.py` (deterministic strike/size engine +
-  risk gate), `llm.py` (Claude JSON signal + fallback + streaming chat), `alpaca.py` (MockAlpaca:
-  account/market/options-chain/mleg fills + CLI wrapper stub), `pricing.py` (Black-Scholes),
+  risk gate), `llm.py` (Claude JSON signal + fallback + streaming chat), `alpaca.py` (LiveAlpaca REST + MockAlpaca, same interface: ensure_seed/market_open/get_market/advance_market/load_chain/find_strike_by_delta/build_chain_leg/expiry_ts/close_values/place_mleg/close_mleg/recompute_equity; make_alpaca factory), `pricing.py` (Black-Scholes),
   `models.py`, `database.py`, `cron_agent.py` (autonomous loop entrypoint).
 - **Frontend (React, /app/frontend/src)**: single dashboard `App.js` with components:
   HeaderTerminal, MetricsRibbon, EquityChart, PositionsTable, AgentReasoningPanel, AskAgentChat,
@@ -40,8 +39,15 @@ Optimized for P&L + a clean write-up/demo for hackathon judges. FastAPI backend 
 
 - Hackathon README.md written at /app/README.md (architecture, AI/code split, gate rules, mock→live steps).
 
+- 2026-09-02 LIVE Alpaca paper wired: real account (PA39X74UN8VF), IEX snapshots, real chain (contracts
+  + indicative snapshots w/ greeks, IV, OI), mleg limit-credit orders (negative limit = credit), 15s fill
+  wait then cancel (position persisted only on fill), closes via mleg (limit for TP, market for stop/time/manual),
+  marks from live option quotes (BS fallback), in-process autonomous loop every AGENT_CYCLE_SECONDS gated by
+  Alpaca /clock, mode-switch wipes mock data. Day P&L = equity - Alpaca last_equity (auto daily reset in live).
+  Tested: iteration_2 backend 14/14 + frontend smoke pass.
+
 ## Backlog / next
-- P1: Wire real Alpaca CLI (needs user paper keys) + `--dry-run` validation path.
 - P1: Optional MCP server layer for external "talk to the agent".
-- P2: Reset day_start_equity on new trading day; SPY benchmark overlay on equity chart.
+- P2: SPY benchmark overlay on equity chart. Reconcile DB positions vs Alpaca /positions (expiry/assignment).
+- P2: Balanced preset min_open_interest=500 rejects many real near-dated legs — consider tuning presets for live chains.
 - P2: Per-underlying IV term structure & earnings calendar gate.

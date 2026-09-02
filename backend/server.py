@@ -1,5 +1,5 @@
 import os
-import json
+import asyncio
 import logging
 
 from fastapi import FastAPI, APIRouter, Body, HTTPException
@@ -7,32 +7,50 @@ from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from database import db
-from alpaca import MockAlpaca
+from alpaca import make_alpaca
 from agent import (run_cycle, seed_demo, get_config, get_agent_state,
-                   market_status, mark_positions)
+                   market_status, mark_positions, close_position as close_spread)
 from llm import chat_stream
-from models import RiskConfig, now_iso, new_id
+from models import RiskConfig
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("options_alpha")
 
 app = FastAPI(title="Options Alpha Agent")
 api = APIRouter(prefix="/api")
-alpaca = MockAlpaca(db)
+alpaca = make_alpaca(db)
+CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
+
+
+async def autonomous_loop():
+    """In-process scheduler: one agent cycle every CYCLE_SECONDS while the market is open."""
+    while True:
+        await asyncio.sleep(CYCLE_SECONDS)
+        try:
+            st = await get_agent_state(db)
+            if st.get("paused") or not st.get("autonomous", True):
+                continue
+            if await alpaca.market_open():
+                res = await run_cycle(db, alpaca)
+                logger.info(f"[auto] cycle {res.get('cycle_id')} {res.get('status')} decisions={len(res.get('decisions', []))}")
+        except Exception as e:  # noqa
+            logger.error(f"[auto] cycle failed: {e}")
 
 
 @app.on_event("startup")
 async def startup():
     await alpaca.ensure_seed()
-    try:
-        await seed_demo(db, alpaca)
-    except Exception as e:  # noqa
-        logger.error(f"seed_demo failed: {e}")
+    if alpaca.mode == "mock":
+        try:
+            await seed_demo(db, alpaca)
+        except Exception as e:  # noqa
+            logger.error(f"seed_demo failed: {e}")
+    asyncio.create_task(autonomous_loop())
 
 
 @api.get("/")
 async def root():
-    return {"service": "Options Alpha Agent", "status": "online", "mode": os.environ.get("ALPACA_MODE", "mock")}
+    return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
 
 
 @api.get("/account")
@@ -58,8 +76,8 @@ async def account():
         "open_risk": open_risk,
         "open_risk_pct": round(open_risk / risk_cap * 100, 1) if risk_cap else 0.0,
         "open_positions": len(open_pos), "win_rate": win_rate,
-        "total_trades": len(closed), "account_id": "PA-ALPHA-PAPER-100K",
-        "mode": os.environ.get("ALPACA_MODE", "mock"),
+        "total_trades": len(closed), "account_id": acc.get("account_number", "—"),
+        "mode": alpaca.mode,
     }
 
 
@@ -99,7 +117,7 @@ async def market():
 @api.get("/status")
 async def status():
     st = await get_agent_state(db)
-    return {"agent": st, "market": market_status()}
+    return {"agent": st, "market": market_status(), "mode": alpaca.mode, "cycle_seconds": CYCLE_SECONDS}
 
 
 @api.get("/config")
@@ -136,18 +154,12 @@ async def close_position(position_id: str):
     p = await db.positions.find_one({"id": position_id, "status": "open"}, {"_id": 0})
     if not p:
         raise HTTPException(status_code=404, detail="position not found or already closed")
-    await alpaca.apply_equity_delta(p["unrealized_pnl"])
-    await db.positions.update_one({"id": position_id}, {"$set": {
-        "status": "closed", "exit_reason": "manual", "realized_pnl": p["unrealized_pnl"],
-        "closed_at": now_iso()}})
-    await db.decisions.insert_one({
-        "id": new_id(), "cycle_id": "manual", "underlying": p["underlying"],
-        "strategy": p["strategy"], "outcome": "approved", "gate_passed": True,
-        "gate_checks": [], "reason": f"MANUAL CLOSE {p['strategy']} realized ${p['unrealized_pnl']:+,.0f}",
-        "position_id": position_id, "created_at": now_iso()})
+    res = await close_spread(db, alpaca, p, "manual", "manual")
+    if not res["closed"]:
+        raise HTTPException(status_code=502, detail=f"close order {res['status']} — position still open")
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     await alpaca.recompute_equity(open_pos)
-    return {"closed": True, "realized_pnl": p["unrealized_pnl"]}
+    return res
 
 
 @api.post("/chat")

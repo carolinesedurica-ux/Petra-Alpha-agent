@@ -4,7 +4,7 @@
 > (put credit spreads, call credit spreads, iron condors) on a $100k Alpaca paper account.
 > Claude Sonnet 4.6 decides *what* to trade; deterministic code decides *whether* and *how much*.
 
-**Stack:** FastAPI · MongoDB · React · Claude Sonnet 4.6 · Alpaca (mock layer today, CLI `mleg` wrapper ready)
+**Stack:** FastAPI · MongoDB · React · Claude Sonnet 4.6 · Alpaca paper REST (`mleg` orders, IEX snapshots, indicative options chain) · switchable mock layer
 
 ---
 
@@ -18,14 +18,14 @@ So Petra never lets the LLM touch a number that can lose money:
 | **Signal** | Claude Sonnet 4.6 | Regime read, direction, confidence, strategy choice, written rationale |
 | **Strike / size engine** | Deterministic code (`engines.build_spread`) | Delta-targeted short strike, width, DTE, contract count from a fixed % risk budget |
 | **Risk gate** | Deterministic code (`engines.risk_gate`) | 7 hard stops — any failure = no order, ever |
-| **Execution** | `alpaca.place_mleg` | Single multi-leg limit order at net credit |
-| **Position mgmt** | `agent.manage_positions` | 50% take-profit, 2x-credit stop, time exit before expiry |
+| **Execution** | `alpaca.place_mleg` | Single `mleg` limit order at net credit (negative limit = credit); position persisted only on confirmed fill, unfilled orders canceled after 15s |
+| **Position mgmt** | `agent.manage_positions` | 50% take-profit (limit close), 2x-credit stop / time exit (market close), marked to live option quotes |
 
 The LLM output is a strict JSON schema. Malformed or low-confidence output falls back to a deterministic
 "no trade" verdict. Every decision — including rejections — is persisted with the full reasoning and
 gate telemetry, so judges can audit exactly why each trade did or did not happen.
 
-## 2. Agent cycle (every 15 min, market hours)
+## 2. Agent cycle (in-process scheduler, every 15 min while Alpaca's clock says open)
 
 ```
 market snapshot ──► Claude verdict (JSON) ──► build_spread() ──► risk_gate() ──► place_mleg()
@@ -34,9 +34,9 @@ market snapshot ──► Claude verdict (JSON) ──► build_spread() ──�
 ```
 
 1. **Mark & manage** open positions (TP / stop / time exit) before looking for new risk.
-2. **Snapshot** the universe (SPY, QQQ, IWM, AAPL, MSFT, NVDA, TSLA, META): price, IV, day change.
+2. **Snapshot** the universe (SPY, QQQ, IWM, AAPL, MSFT, NVDA, TSLA, META) from IEX; pull the real chain for the nearest expiry ≥ `dte_min` (contracts + indicative snapshots with greeks, IV, open interest).
 3. **Ask Claude** for `{regime, direction, confidence, chosen_strategy, underlying, rationale}`.
-4. **Build the spread**: short strike at |Δ| ≈ 0.22, 2-strike width, 3 DTE, contracts = ⌊risk budget / max loss⌋ (cap 10).
+4. **Build the spread**: short strike at |Δ| ≈ 0.22 from real greeks, 2-strike width on the chain's actual spacing, contracts = ⌊risk budget / max loss⌋ (cap 10).
 5. **Risk gate** (all must pass):
    - Max risk per trade ≤ 2% of equity
    - Concurrent positions < 5
@@ -67,9 +67,9 @@ backend/
   agent.py         cycle orchestration, position management, market hours
   engines.py       deterministic strike/size engine + risk gate (no LLM)
   llm.py           Claude signal (JSON schema + fallback) and streaming chat
-  alpaca.py        MockAlpaca (account, market, chain, fills) + Alpaca CLI mleg wrapper
+  alpaca.py        LiveAlpaca (REST: account, snapshots, chain, mleg open/close) + MockAlpaca (same interface)
   pricing.py       Black-Scholes price / delta
-  cron_agent.py    autonomous loop entrypoint
+  cron_agent.py    optional external cron entrypoint (server.py already runs the loop in-process)
   models.py, database.py
 frontend/src/
   App.js           dashboard
@@ -101,7 +101,8 @@ frontend/src/
 # backend
 cd backend
 pip install -r requirements.txt
-# .env: MONGO_URL, DB_NAME, EMERGENT_LLM_KEY, ALPACA_MODE=mock
+# .env: MONGO_URL, DB_NAME, EMERGENT_LLM_KEY, ALPACA_MODE=live|mock,
+#       ALPACA_API_KEY, ALPACA_API_SECRET, ALPACA_TRADING_URL, ALPACA_DATA_URL, AGENT_CYCLE_SECONDS
 uvicorn server:app --host 0.0.0.0 --port 8001 --reload
 
 # frontend
@@ -110,25 +111,26 @@ yarn install
 # .env: REACT_APP_BACKEND_URL=http://localhost:8001
 yarn start
 
-# autonomous loop (crontab, weekdays 9–16 ET every 15 min)
-*/15 9-16 * * 1-5  cd /app/backend && python cron_agent.py >> /var/log/agent_cron.log 2>&1
 ```
 
-## 7. Switching from mock to live Alpaca paper
+## 7. Live paper vs. mock
 
-The mock layer simulates the account, a random-walk market, a Black-Scholes options chain and instant
-mid-price fills so the entire pipeline runs end-to-end without keys. To route real paper orders:
+`ALPACA_MODE=live` (default in this repo) talks to the Alpaca paper account:
 
-1. Install and authenticate the Alpaca CLI with paper-trading keys.
-2. In `backend/.env` set `ALPACA_MODE=cli`, `ALPACA_API_KEY`, `ALPACA_API_SECRET`.
-3. `alpaca.place_mleg` shells out to `alpaca orders create --order-class mleg ...`
-   (supports `--dry-run` for validation). Account/market/chain reads remain to be wired to the
-   Alpaca data API — the engine and gate are unchanged.
+- `GET /v2/account` → equity, options buying power, `last_equity` (day-start for Day P&L)
+- `GET /v2/stocks/snapshots?feed=iex` → universe prices
+- `GET /v2/options/contracts` + `GET /v1beta1/options/snapshots/{u}?feed=indicative` → strikes, OI, greeks, IV
+- `POST /v2/orders` `order_class=mleg` → open (limit, net credit) and close (limit for TP, market for stop/time/manual)
+- `GET /v2/clock` → market-open gate for the scheduler
+
+`ALPACA_MODE=mock` swaps in `MockAlpaca`: simulated $100k account, random-walk tape, Black-Scholes chain and
+instant mid fills, so the whole pipeline demos offline. Switching modes wipes positions/decisions/snapshots
+so mock data never mixes with the real account.
 
 ## 8. Safety properties (for judges)
 
 - **LLM never sizes or executes.** It returns an opinion; code decides.
 - **Defined risk only.** Every position is a spread; max loss is known at entry and enforced before order.
 - **Idempotent cycles.** Duplicate underlyings are rejected; each cycle has an id stamped on every artifact.
-- **Fail closed.** LLM error, schema violation, or any gate failure → no order, decision logged as rejected.
+- **Fail closed.** LLM error, schema violation, chain fetch failure, gate failure, or an unfilled order → no position, decision logged.
 - **Full audit trail.** Prompt, verdict, gate checks, order and exit reason are all stored in MongoDB and rendered live.

@@ -3,8 +3,7 @@ import random
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 
-from alpaca import MockAlpaca, UNIVERSE
-from pricing import bs_price, bs_delta
+from alpaca import UNIVERSE
 from engines import build_spread, risk_gate
 from llm import get_verdict
 from models import Position, Decision, RiskConfig, AgentState, now_iso, new_id
@@ -47,25 +46,12 @@ async def get_agent_state(db):
     return doc
 
 
-def _spread_close_value(p, market):
-    """Current net debit (per share) to buy the spread back, marked to model."""
-    S = market[p["underlying"]]["price"]
-    iv = market[p["underlying"]]["iv"]
-    remain = max(0.0, (datetime.fromisoformat(p["expiry_ts"]) - datetime.now(timezone.utc)).total_seconds() / 86400.0)
-    T = max(remain, 0.02) / 365.0
-    val = 0.0
-    for leg in p["legs"]:
-        is_call = leg["option_type"] == "call"
-        price = bs_price(S, leg["strike"], T, iv, is_call)
-        val += price if leg["side"] == "sell" else -price
-    return round(max(0.0, val), 2), remain
-
-
 async def mark_positions(db, alpaca):
     market = await alpaca.get_market()
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    marks = await alpaca.close_values(open_pos, market) if open_pos else {}
     for p in open_pos:
-        close_val, remain = _spread_close_value(p, market)
+        close_val, remain = marks[p["id"]]
         pnl = round((p["credit"] - close_val) * 100 * p["contracts"], 2)
         max_p = p["credit"] * 100 * p["contracts"]
         pct = round((pnl / max_p) * 100, 1) if max_p else 0.0
@@ -89,22 +75,30 @@ async def manage_positions(db, alpaca, cfg, cycle_id):
         elif p["dte"] <= 0.75:
             reason = "time_exit"
         if reason:
-            await _close_position(db, alpaca, p, reason, cycle_id)
-            events.append({"underlying": p["underlying"], "reason": reason, "pnl": p["unrealized_pnl"]})
+            res = await close_position(db, alpaca, p, reason, cycle_id)
+            events.append({"underlying": p["underlying"], "reason": reason, "pnl": res.get("realized_pnl")})
     return events
 
 
-async def _close_position(db, alpaca, p, reason, cycle_id):
-    realized = p["unrealized_pnl"]
-    await alpaca.apply_equity_delta(realized)  # realize into cash
+async def close_position(db, alpaca, p, reason, cycle_id):
+    """Route a closing mleg order (market if urgent); persist only on fill."""
+    res = await alpaca.close_mleg(p, urgent=reason != "take_profit")
+    if res["status"] != "filled":
+        await db.decisions.insert_one(Decision(
+            cycle_id=cycle_id, underlying=p["underlying"], strategy=p["strategy"], outcome="error",
+            reason=f"EXIT [{reason}] close order {res.get('alpaca_status', res['status'])} — position stays open, retry next cycle",
+            position_id=p["id"]).model_dump())
+        return {"closed": False, "status": res["status"]}
+    realized = round((p["credit"] - res["filled_debit"]) * 100 * p["contracts"], 2)
     await db.positions.update_one({"id": p["id"]}, {"$set": {
         "status": "closed", "exit_reason": reason, "realized_pnl": realized,
-        "closed_at": now_iso()}})
+        "current_value": res["filled_debit"], "closed_at": now_iso()}})
     await db.decisions.insert_one(Decision(
         cycle_id=cycle_id, underlying=p["underlying"], strategy=p["strategy"],
         outcome="approved", gate_passed=True,
-        reason=f"EXIT [{reason}] {p['strategy']} realized ${realized:+,.0f}",
+        reason=f"EXIT [{reason}] {p['strategy']} realized ${realized:+,.0f} (order {res['order_id']})",
         position_id=p["id"]).model_dump())
+    return {"closed": True, "realized_pnl": realized}
 
 
 async def open_slots(db, cfg):
@@ -120,14 +114,14 @@ async def run_cycle(db, alpaca, force=False):
 
     if state.get("paused"):
         return {"cycle_id": cycle_id, "status": "paused", "message": "Agent is paused.", "decisions": []}
-    if not mkt["open"] and not force:
+    if not force and not await alpaca.market_open():
         await db.decisions.insert_one(Decision(
             cycle_id=cycle_id, underlying="—", outcome="skipped",
             reason="Market closed — options trade in regular hours only. Agent no-op.").model_dump())
         await _bump_cycle(db, state)
         return {"cycle_id": cycle_id, "status": "market_closed", "message": mkt["message"], "decisions": []}
 
-    # 1. advance the simulated tape + manage existing positions
+    # 1. refresh the tape (mock: random walk / live: IEX snapshots) + manage existing positions
     await alpaca.advance_market()
     exits = await manage_positions(db, alpaca, cfg, cycle_id)
 
@@ -145,9 +139,23 @@ async def run_cycle(db, alpaca, force=False):
         if len([d for d in decisions_out if d["outcome"] == "approved"]) >= slots:
             break
         m = market[sym]
+        try:
+            chain = await alpaca.load_chain(sym, m["price"], cfg)
+        except Exception as e:  # noqa
+            chain = None
+            await db.decisions.insert_one(Decision(cycle_id=cycle_id, underlying=sym, outcome="error",
+                                                   reason=f"Chain fetch failed: {e}").model_dump())
+            continue
+        if chain:
+            m.update({k: chain[k] for k in ("iv", "spacing") if chain.get(k)})
+        live = alpaca.mode == "live"
         snap = {"symbol": sym, "price": m["price"], "prev_price": m["prev_price"],
                 "change_pct": round((m["price"] / m["day_open"] - 1) * 100, 2),
-                "iv": m["iv"], "trend": m["trend"], "sentiment": random.choice(SENTIMENTS)}
+                "iv": m["iv"], "trend": m["trend"],
+                "trend_label": "Change vs prior close" if live else "5-step trend bias (per day)",
+                "sentiment": "no news feed wired — rely on price/IV" if live else random.choice(SENTIMENTS)}
+        if chain:
+            snap["expiry"] = chain["expiry"]
         verdict = await get_verdict(snap, cycle_id)
 
         dec = Decision(cycle_id=cycle_id, underlying=sym, verdict=verdict,
@@ -183,19 +191,28 @@ async def run_cycle(db, alpaca, force=False):
             decisions_out.append(dec.model_dump())
             continue
 
-        # 3. execute via Alpaca (mock) mleg order
-        order = await alpaca.place_mleg(proposal, dry_run=False)
-        credit_cash = proposal["credit"] * 100 * proposal["contracts"]
-        await alpaca.apply_equity_delta(credit_cash)  # collect credit into cash
+        # 3. execute via Alpaca mleg order — persist a position only on a confirmed fill
+        try:
+            order = await alpaca.place_mleg(proposal, cycle_id=cycle_id)
+        except Exception as e:  # noqa
+            order = {"order_id": "", "status": "error", "alpaca_status": str(e)[:200], "filled_credit": 0}
+        if order["status"] != "filled":
+            dec.outcome = "error"
+            dec.reason = f"Order {order.get('alpaca_status', order['status'])} — not filled, no position opened."
+            await db.decisions.insert_one(dec.model_dump())
+            decisions_out.append(dec.model_dump())
+            continue
+        credit = round(order["filled_credit"] or proposal["credit"], 2)
+        credit_cash = credit * 100 * proposal["contracts"]
 
         pos = Position(
             underlying=sym, strategy=proposal["strategy"], legs=proposal["legs"],
-            contracts=proposal["contracts"], width=proposal["width"], credit=proposal["credit"],
+            contracts=proposal["contracts"], width=proposal["width"], credit=credit,
             max_risk=proposal["max_risk"], entry_underlying=m["price"], entry_iv=m["iv"],
             dte=proposal["dte"], expiry_ts=proposal["expiry_ts"],
-            tp_target=round(proposal["credit"] * (1 - cfg["tp_pct"]), 2),
-            stop_target=round(proposal["credit"] * cfg["stop_mult"], 2),
-            current_value=proposal["credit"], risk_gate_score=score,
+            tp_target=round(credit * (1 - cfg["tp_pct"]), 2),
+            stop_target=round(credit * cfg["stop_mult"], 2),
+            current_value=credit, risk_gate_score=score,
             alpaca_order_id=order["order_id"])
         await db.positions.insert_one(pos.model_dump())
 

@@ -6,12 +6,12 @@ Install (market hours, every 15 min, Mon-Fri):
 """
 import asyncio
 from database import db
-from alpaca import MockAlpaca
+from alpaca import make_alpaca
 from agent import run_cycle
 
 
 async def main():
-    alpaca = MockAlpaca(db)
+    alpaca = make_alpaca(db)
     await alpaca.ensure_seed()
     result = await run_cycle(db, alpaca, force=False)
     print(f"[cron] cycle {result.get('cycle_id')} status={result.get('status')} "

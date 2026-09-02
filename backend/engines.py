@@ -12,9 +12,9 @@ def build_spread(alpaca, underlying, S, iv, spacing, verdict, cfg, equity):
     Returns a proposal dict or None if strikes can't be built.
     """
     strategy = verdict["chosen_strategy"]
-    dte = cfg["dte_min"]
+    expiry_ts = alpaca.expiry_ts(underlying, cfg["dte_min"])
+    dte = round((datetime.fromisoformat(expiry_ts) - datetime.now(timezone.utc)).total_seconds() / 86400.0, 2)
     T = max(dte, 0.5) / 365.0
-    expiry_ts = (datetime.now(timezone.utc) + timedelta(days=dte)).isoformat()
     td = cfg["target_delta"]
     width = spacing * 2  # 2-strike wide spread
 
@@ -22,14 +22,16 @@ def build_spread(alpaca, underlying, S, iv, spacing, verdict, cfg, equity):
 
     def put_credit():
         short = alpaca.find_strike_by_delta(underlying, S, iv, spacing, "put", td, T)
-        long_k = short["strike"] - width
-        long = alpaca.build_chain_leg(underlying, S, iv, "put", long_k, T)
+        if not short:
+            return None, None
+        long = alpaca.build_chain_leg(underlying, S, iv, "put", short["strike"] - width, T)
         return short, long
 
     def call_credit():
         short = alpaca.find_strike_by_delta(underlying, S, iv, spacing, "call", td, T)
-        long_k = short["strike"] + width
-        long = alpaca.build_chain_leg(underlying, S, iv, "call", long_k, T)
+        if not short:
+            return None, None
+        long = alpaca.build_chain_leg(underlying, S, iv, "call", short["strike"] + width, T)
         return short, long
 
     parts = []
@@ -42,24 +44,25 @@ def build_spread(alpaca, underlying, S, iv, spacing, verdict, cfg, equity):
         parts.append(("call", *call_credit()))
     else:
         return None
+    if any(short is None or long is None or short["strike"] == long["strike"] for _, short, long in parts):
+        return None
 
     credit = 0.0
     worst_bid_ask = 0.0
     min_oi = 10 ** 9
+    risk_width = 0.0
     for opt_type, short, long in parts:
         credit += (short["mid"] - long["mid"])  # net credit at mid
         worst_bid_ask = max(worst_bid_ask, short["bid_ask_pct"], long["bid_ask_pct"])
         min_oi = min(min_oi, short["open_interest"], long["open_interest"])
-        legs.append({"side": "sell", "option_type": opt_type, "strike": short["strike"],
-                     "delta": short["delta"], "price": short["mid"],
-                     "symbol": occ_symbol(underlying, expiry_ts, opt_type, short["strike"])})
-        legs.append({"side": "buy", "option_type": opt_type, "strike": long["strike"],
-                     "delta": long["delta"], "price": long["mid"],
-                     "symbol": occ_symbol(underlying, expiry_ts, opt_type, long["strike"])})
+        risk_width = max(risk_width, abs(short["strike"] - long["strike"]))
+        for side, leg in (("sell", short), ("buy", long)):
+            legs.append({"side": side, "option_type": opt_type, "strike": leg["strike"],
+                         "delta": leg["delta"] or 0.0, "price": leg["mid"],
+                         "symbol": leg["symbol"] or occ_symbol(underlying, expiry_ts, opt_type, leg["strike"])})
 
     credit = round(max(0.01, credit), 2)
-    # for an iron condor total width risk is a single side width (only one side can be breached)
-    risk_width = width
+    # for an iron condor only one side can be breached, so risk is the wider single side
     max_loss_per = (risk_width - credit) * 100
     if max_loss_per <= 0:
         return None

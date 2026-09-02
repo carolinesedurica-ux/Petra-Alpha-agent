@@ -1,0 +1,31 @@
+{
+  "summary": "LIVE Alpaca paper integration test. Backend: 14 pytest tests across account/status/market/pnl/positions/trades/decisions/config/agent-cycle(market_closed + forced)/close-404/chat streaming — 14/14 passed. Verified /api/account returns mode='live', account_id='PA39X74UN8VF', equity=100000; /api/market returns all 8 UNIVERSE symbols with real IEX prices (SPY ~$766, not the mock $545); /api/status mode='live', cycle_seconds=900. Cycle without force while market is closed correctly returns status='market_closed'. One forced cycle ran end-to-end (~10s, no chain-fetch needed for LLM-rejected + gate-rejected): all 3 decisions had valid outcomes {rejected(risk_gate), rejected(low_conf), rejected(risk_gate)}, gate_checks arrays present with real OI/bid-ask data, no orphan positions persisted. PUT /api/config roundtrip (min_open_interest 300→restored) works. POST /api/positions/{bad_id}/close returns 404 (previous iteration's minor issue is fixed). POST /api/chat streams. Frontend smoke: dashboard loads at REACT_APP_BACKEND_URL, header shows 'PAPER LIVE' + 'PA39X74UN8VF', metrics ribbon shows $100,000.00 total equity, Live Decision Engine panel renders decisions (IWM CALL CREDIT rejected — Credit/Width & OI, SPY IRON CONDOR rejected — low Claude conf 42%) with Claude signals visible, equity chart svg renders, RUN AGENT CYCLE completes without console errors, Risk config modal opens. No 500s observed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Equity Growth Curve", "issues": ["Chart y-axis draws a large solid teal filled area at bottom even for a flat $100k line — visually noisy for a fresh account with a single snapshot. Cosmetic only."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py autonomous_loop uses `await asyncio.sleep(CYCLE_SECONDS)` BEFORE the first cycle — background task waits 15 minutes on startup before ever running. Consider running one immediate cycle (if market_open) on startup or sleeping after run.",
+    "alpaca.py LiveAlpaca._await_fill computes range with `wait_s // 3` — with default 15s that is only 5 iterations of 3s = 15s (fine), but a mleg limit at exact -credit tick is unlikely to fill outside RTH; consider a slightly more aggressive limit_price for closes and/or logging fill diagnostics.",
+    "agent.py run_cycle selects candidates via `random.shuffle` then slices [:min(3, max(1,slots) if slots else 1)] — the parenthesization means when slots=0 it still evaluates 1 candidate, which cannot open (correct behavior via `approved >= slots` early-break but wastes a Claude call). Consider skipping candidate loop when slots==0.",
+    "alpaca.py LiveAlpaca.load_chain uses `strike_price_gte=S*0.97/lte=S*1.03` for the probe — for cheap high-IV names (e.g. NVDA at $130) this is only ~$4 wide and may return zero contracts on some expiries; probe window could scale with iv/spacing.",
+    "server.py /api/account computes `day_pnl = equity - day_start_equity` after also calling _fetch_account (which resets day_start_equity=last_equity every request); this is correct while last_equity is stable but has a subtle race across day boundaries."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "test_credentials": "N/A (no auth). Alpaca paper keys in /app/backend/.env (untouched).",
+  "seed_data_creation": "None created by tests. Live account is fresh: equity=$100,000, no positions, 14 auto-cycles + 1 forced test cycle recorded (all rejected — no real orders filled). Config toggled min_open_interest 300 then restored to original.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "ALPACA_MODE=live in /app/backend/.env — do NOT flip back to mock. Live account id is PA39X74UN8VF, base equity $100,000. Universe: SPY,QQQ,IWM,AAPL,MSFT,NVDA,TSLA,META. During RTH (09:30-16:00 ET Mon-Fri) `run-cycle` without force may open real mleg paper orders — each has a 15s fill window then auto-cancel. Backend tests at /app/backend/tests/backend_test.py; run via `pytest tests/backend_test.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml` (pytest.ini fixes xdist to 2 workers loadscope). No 500s observed. All frontend data-testids used are present (trading-terminal-root, metric-total-equity, agent-run-cycle-btn, open-risk-settings-btn, agent-emergency-pause-btn).",
+  "rca of the issue": "No blocking issues. Only minor cosmetic note on the flat equity chart fill area — likely an AreaChart baseline anchoring to 0 or lower than the y-min; can be fixed by clamping the area domain to [min-1, max+1] when the equity curve has <2 distinct points."
+}
