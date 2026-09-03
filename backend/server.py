@@ -24,8 +24,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("options_alpha")
 
 app = FastAPI(title="Options Alpha Agent")
-api = APIRouter(prefix="/api")
+api = APIRouter()
 alpaca = make_alpaca(db)
+
 CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
 SERVERLESS = bool(os.environ.get("VERCEL"))
 TICK_MAX_CANDIDATES = int(os.environ.get("TICK_MAX_CANDIDATES", "3"))
@@ -481,9 +482,6 @@ async def chat(payload: dict = Body(...)):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-app.include_router(api)
-if os.path.isdir(FRONTEND_BUILD):
-    app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -493,7 +491,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(api, prefix="/api")
+app.include_router(api)
+
+if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
+    app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
+
 
 @app.on_event("shutdown")
 async def shutdown():
     pass
+
