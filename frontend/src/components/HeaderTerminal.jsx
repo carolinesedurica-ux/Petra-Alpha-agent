@@ -1,11 +1,7 @@
 import { motion } from "framer-motion";
 import { Pause, Play, Settings2, Zap, TrendingUp } from "lucide-react";
 
-<<<<<<< Updated upstream
-export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPause, onOpenRisk, onOpenManualTrade, cycling }) => {
-=======
-export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPause, onOpenRisk, onOpenTrade, cycling }) => {
->>>>>>> Stashed changes
+export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPause, onOpenRisk, onOpenManualTrade, onOpenTrade, cycling }) => {
   const marketOpen = status?.market?.open;
   const paused = agent?.paused;
 
@@ -50,10 +46,12 @@ export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPaus
         </div>
 
         <div className="flex items-center gap-2">
-          <button data-testid="open-manual-trade-btn" onClick={() => onOpenManualTrade && onOpenManualTrade()}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-md font-mono text-xs font-bold text-[#00F0B5] border border-[#00F0B5]/40 bg-[#00F0B5]/10 hover:bg-[#00F0B5]/20 hover:border-[#00F0B5] transition-all">
-            <Zap size={14} /> + OPEN POSITION
-          </button>
+          {onOpenManualTrade && (
+            <button data-testid="open-manual-trade-btn" onClick={() => onOpenManualTrade()}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-md font-mono text-xs font-bold text-[#00F0B5] border border-[#00F0B5]/40 bg-[#00F0B5]/10 hover:bg-[#00F0B5]/20 hover:border-[#00F0B5] transition-all">
+              <Zap size={14} /> + OPEN POSITION
+            </button>
+          )}
           <button data-testid="open-risk-settings-btn" onClick={onOpenRisk}
             className="flex items-center gap-1.5 px-3 py-2 term-well text-slate-300 hover:text-white hover:border-[var(--border-accent)] transition-colors text-xs font-mono">
             <Settings2 size={14} /> RISK

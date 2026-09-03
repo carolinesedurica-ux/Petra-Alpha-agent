@@ -10,18 +10,7 @@
     }
   },
   "rewrites": [
-<<<<<<< Updated upstream
-    {
-      "source": "/api/(.*)",
-      "destination": "/backend/server.py"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
-=======
     { "source": "/api/(.*)", "destination": "/api/index.py" },
     { "source": "/(.*)",     "destination": "/index.html" }
->>>>>>> Stashed changes
   ]
 }

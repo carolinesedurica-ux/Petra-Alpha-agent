@@ -251,7 +251,7 @@ async def close_position(position_id: str):
     return res
 
 
-<<<<<<< Updated upstream
+
 @api.post("/opportunities/evaluate")
 async def evaluate_opportunity(payload: dict = Body(...)):
     """Evaluate any underlying symbol on-demand: fetches live chain, runs LLM verdict, strike engine, and 7 risk gates."""
@@ -391,7 +391,8 @@ async def manual_open_position(payload: dict = Body(...)):
         "fill_status": fill_status,
         "message": f"Opened {proposal['strategy']} x{proposal['contracts']} on {proposal['underlying']}"
     }
-=======
+
+
 @api.post("/orders/manual")
 async def manual_order(payload: dict = Body(...)):
     """Place a simple equity order manually via the Trade Window."""
@@ -418,7 +419,7 @@ async def manual_order(payload: dict = Body(...)):
 @api.get("/market/live")
 async def market_live():
     """Enriched live snapshot: bid/ask/volume for all UNIVERSE symbols (Trade Window ticker)."""
-    symbols = list(__import__("alpaca").UNIVERSE.keys())
+    symbols = list(UNIVERSE.keys())
     quotes = {}
     for sym in symbols:
         try:
@@ -448,7 +449,7 @@ async def market_bars(symbol: str, limit: int = 30):
     """Return OHLCV bars for sparkline chart in Trade Window."""
     bars = await alpaca.get_bars(symbol.upper(), limit=min(limit, 60))
     return {"symbol": symbol.upper(), "bars": bars}
->>>>>>> Stashed changes
+
 
 
 @api.post("/chat")

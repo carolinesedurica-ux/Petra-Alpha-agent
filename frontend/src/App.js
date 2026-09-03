@@ -18,13 +18,10 @@ import { RiskConfigModal } from "@/components/RiskConfigModal";
 import { SpreadPayoffModal } from "@/components/SpreadPayoffModal";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { OrderBlotter } from "@/components/OrderBlotter";
-<<<<<<< Updated upstream
 import { ManualTradeModal } from "@/components/ManualTradeModal";
-=======
 import { MarketTickerStrip } from "@/components/MarketTickerStrip";
 import { TradeWindow } from "@/components/TradeWindow";
 import { BotActivityFeed } from "@/components/BotActivityFeed";
->>>>>>> Stashed changes
 import { ScrollText, ShieldCheck, History, Receipt } from "lucide-react";
 
 const useLive = (key, fn, interval = 8000) =>
@@ -46,6 +43,8 @@ function App() {
   const [riskOpen, setRiskOpen] = useState(false);
   const [payoff, setPayoff] = useState(null);
   const [closingId, setClosingId] = useState(null);
+
+  // Manual Trade Modal state (upstream feature)
   const [manualTradeOpen, setManualTradeOpen] = useState(false);
   const [manualTradeData, setManualTradeData] = useState(null);
 
@@ -54,13 +53,12 @@ function App() {
     setManualTradeOpen(true);
   };
 
-  // Trade Window state
+  // Trade Window state (our new feature)
   const [tradeOpen, setTradeOpen] = useState(false);
   const [tradeSymbol, setTradeSymbol] = useState(null);
 
   const openTrade = (symbolOrEvent) => {
     if (symbolOrEvent && symbolOrEvent.symbol) {
-      // Called from MarketTickerStrip chip click
       setTradeSymbol(symbolOrEvent.symbol);
     } else {
       setTradeSymbol(null);
@@ -113,17 +111,13 @@ function App() {
       <HeaderTerminal
         account={account} status={status} agent={status?.agent} llm={llm}
         onRunCycle={() => cycleMut.mutate()} onPause={(p) => pauseMut.mutate(p)}
-<<<<<<< Updated upstream
-        onOpenRisk={() => setRiskOpen(true)} onOpenManualTrade={() => handleOpenManualTrade(null)}
-        cycling={cycleMut.isPending} />
-=======
         onOpenRisk={() => setRiskOpen(true)}
+        onOpenManualTrade={() => handleOpenManualTrade(null)}
         onOpenTrade={() => openTrade(null)}
         cycling={cycleMut.isPending} />
 
       {/* ── Live Market Ticker Strip ── */}
       <MarketTickerStrip liveMarket={liveMarket} onSymbolClick={openTrade} />
->>>>>>> Stashed changes
 
       <main className="mx-auto max-w-[1600px] px-4 sm:px-6 py-5 space-y-5 relative z-10">
         <MetricsRibbon account={account} />
@@ -135,18 +129,9 @@ function App() {
               onPayoff={(p) => setPayoff(p)} closingId={closingId} />
           </div>
           <div className="xl:col-span-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-5">
-<<<<<<< Updated upstream
-            <AgentReasoningPanel
-              decisions={(decisions || []).slice(0, 30)}
-              showGate={false}
-              title="Live Decision Engine"
-              onTradeOpportunity={handleOpenManualTrade}
-            />
-=======
-            <AgentReasoningPanel decisions={(decisions || []).slice(0, 30)} showGate={false} title="Live Decision Engine" />
+            <AgentReasoningPanel decisions={(decisions || []).slice(0, 30)} showGate={false} title="Live Decision Engine" onTradeOpportunity={handleOpenManualTrade} />
             {/* Bot Activity Feed */}
             <BotActivityFeed decisions={decisions} />
->>>>>>> Stashed changes
             <AskAgentChat />
           </div>
         </div>
@@ -167,22 +152,10 @@ function App() {
               ))}
             </TabsList>
             <TabsContent value="decisions" className="p-3 mt-0">
-              <AgentReasoningPanel
-                decisions={decisions}
-                showGate
-                height="480px"
-                title="Full Reasoning + Gate Audit Trail"
-                onTradeOpportunity={handleOpenManualTrade}
-              />
+              <AgentReasoningPanel decisions={decisions} showGate height="480px" title="Full Reasoning + Gate Audit Trail" onTradeOpportunity={handleOpenManualTrade} />
             </TabsContent>
             <TabsContent value="gate" className="p-3 mt-0">
-              <AgentReasoningPanel
-                decisions={gateDecisions}
-                showGate
-                height="480px"
-                title="Deterministic Risk-Gate Telemetry"
-                onTradeOpportunity={handleOpenManualTrade}
-              />
+              <AgentReasoningPanel decisions={gateDecisions} showGate height="480px" title="Deterministic Risk-Gate Telemetry" onTradeOpportunity={handleOpenManualTrade} />
             </TabsContent>
             <TabsContent value="history" className="mt-0">
               <TradeHistoryTable trades={trades} />
@@ -201,13 +174,13 @@ function App() {
       {/* ── Modals ── */}
       <RiskConfigModal open={riskOpen} onOpenChange={setRiskOpen} config={config} onSave={saveConfig} />
       <SpreadPayoffModal position={payoff} open={!!payoff} onOpenChange={(o) => !o && setPayoff(null)} />
-<<<<<<< Updated upstream
+
       <ManualTradeModal
         open={manualTradeOpen}
         onClose={() => setManualTradeOpen(false)}
         initialData={manualTradeData}
         onSuccess={refetchAll}
-=======
+      />
 
       {/* ── Trade Window (slide-over) ── */}
       <TradeWindow
@@ -215,7 +188,6 @@ function App() {
         onClose={() => setTradeOpen(false)}
         initialSymbol={tradeSymbol}
         liveMarket={liveMarket}
->>>>>>> Stashed changes
       />
     </div>
   );
