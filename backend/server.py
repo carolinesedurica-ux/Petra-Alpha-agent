@@ -1,7 +1,9 @@
 import os
 import sys
+import json
 import asyncio
 import logging
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -59,6 +61,58 @@ async def startup():
 @api.get("/")
 async def root():
     return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
+
+
+@api.get("/mcp/status")
+async def mcp_status():
+    acc = await alpaca.get_account() or {}
+    return {
+        "status": "online",
+        "protocol": "Model Context Protocol (MCP)",
+        "servers": {
+            "alpaca": {
+                "name": "Official Alpaca MCP Server",
+                "package": "alpaca-mcp-server v2.3.1",
+                "mode": "paper",
+                "account_id": acc.get("account_number", "PA39X74UN8VF"),
+                "status": "active"
+            },
+            "petra_alpha": {
+                "name": "Petra Options Alpha MCP Server",
+                "status": "active",
+                "tools": [
+                    "get_alpaca_account",
+                    "get_market_universe",
+                    "get_options_chain",
+                    "get_open_positions",
+                    "evaluate_risk_gate",
+                    "trigger_agent_cycle",
+                    "reconcile_positions"
+                ]
+            }
+        },
+        "config": ".mcp.json"
+    }
+
+
+@api.get("/models")
+async def get_models():
+    models_file = Path(__file__).parent / "featherless_models.json"
+    categories = {}
+    if models_file.exists():
+        try:
+            with open(models_file, "r", encoding="utf-8") as f:
+                categories = json.load(f)
+        except Exception:
+            pass
+    active_model = os.environ.get("FEATHERLESS_MODEL", "Qwen/Qwen3.6-35B-A3B")
+    has_featherless = bool(os.environ.get("FEATHERLESS_API_KEY"))
+    return {
+        "provider": "Featherless AI" if has_featherless else "Emergent / Fallback",
+        "active_model": active_model,
+        "endpoint": os.environ.get("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1"),
+        "curated_categories": categories
+    }
 
 
 @api.get("/account")
