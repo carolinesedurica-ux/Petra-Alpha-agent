@@ -4,12 +4,13 @@
   "buildCommand": "cd frontend && yarn install --frozen-lockfile && REACT_APP_BACKEND_URL= yarn build",
   "outputDirectory": "frontend/build",
   "functions": {
-    "backend/server.py": {
+    "api/index.py": {
       "maxDuration": 300,
       "memory": 1024
     }
   },
   "rewrites": [
+<<<<<<< Updated upstream
     {
       "source": "/api/(.*)",
       "destination": "/backend/server.py"
@@ -18,5 +19,9 @@
       "source": "/(.*)",
       "destination": "/index.html"
     }
+=======
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/(.*)",     "destination": "/index.html" }
+>>>>>>> Stashed changes
   ]
 }

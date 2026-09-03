@@ -251,6 +251,7 @@ async def close_position(position_id: str):
     return res
 
 
+<<<<<<< Updated upstream
 @api.post("/opportunities/evaluate")
 async def evaluate_opportunity(payload: dict = Body(...)):
     """Evaluate any underlying symbol on-demand: fetches live chain, runs LLM verdict, strike engine, and 7 risk gates."""
@@ -390,6 +391,64 @@ async def manual_open_position(payload: dict = Body(...)):
         "fill_status": fill_status,
         "message": f"Opened {proposal['strategy']} x{proposal['contracts']} on {proposal['underlying']}"
     }
+=======
+@api.post("/orders/manual")
+async def manual_order(payload: dict = Body(...)):
+    """Place a simple equity order manually via the Trade Window."""
+    symbol = payload.get("symbol", "").upper().strip()
+    qty = int(payload.get("qty", 0))
+    side = payload.get("side", "buy")          # buy | sell
+    order_type = payload.get("order_type", "market")  # market | limit
+    limit_price = payload.get("limit_price")  # float or None
+
+    if not symbol or qty <= 0 or side not in ("buy", "sell"):
+        raise HTTPException(status_code=422, detail="symbol, qty (>0), and side (buy|sell) are required")
+    if order_type not in ("market", "limit"):
+        raise HTTPException(status_code=422, detail="order_type must be market or limit")
+    if order_type == "limit" and not limit_price:
+        raise HTTPException(status_code=422, detail="limit_price required for limit orders")
+
+    res = await alpaca.place_equity_order(
+        symbol=symbol, qty=qty, side=side,
+        order_type=order_type, limit_price=float(limit_price) if limit_price else None
+    )
+    return res
+
+
+@api.get("/market/live")
+async def market_live():
+    """Enriched live snapshot: bid/ask/volume for all UNIVERSE symbols (Trade Window ticker)."""
+    symbols = list(__import__("alpaca").UNIVERSE.keys())
+    quotes = {}
+    for sym in symbols:
+        try:
+            quotes[sym] = await alpaca.get_quote(sym)
+        except Exception as e:  # noqa
+            logger.warning(f"quote failed {sym}: {e}")
+    m = await alpaca.get_market()
+    result = []
+    for sym in symbols:
+        q = quotes.get(sym, {})
+        mkt = m.get(sym, {})
+        result.append({
+            "symbol": sym,
+            "last": q.get("last") or mkt.get("price", 0),
+            "bid": q.get("bid", 0),
+            "ask": q.get("ask", 0),
+            "volume": q.get("volume", 0),
+            "iv": q.get("iv") or mkt.get("iv"),
+            "change_pct": q.get("change_pct") or round((mkt.get("price", 0) / mkt.get("day_open", 1) - 1) * 100, 2),
+            "trend": mkt.get("trend", 0),
+        })
+    return {"symbols": result, "market": market_status()}
+
+
+@api.get("/market/bars/{symbol}")
+async def market_bars(symbol: str, limit: int = 30):
+    """Return OHLCV bars for sparkline chart in Trade Window."""
+    bars = await alpaca.get_bars(symbol.upper(), limit=min(limit, 60))
+    return {"symbol": symbol.upper(), "bars": bars}
+>>>>>>> Stashed changes
 
 
 @api.post("/chat")

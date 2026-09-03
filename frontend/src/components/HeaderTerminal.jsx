@@ -1,7 +1,11 @@
 import { motion } from "framer-motion";
-import { Activity, Radio, Pause, Play, Settings2, Zap } from "lucide-react";
+import { Pause, Play, Settings2, Zap, TrendingUp } from "lucide-react";
 
+<<<<<<< Updated upstream
 export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPause, onOpenRisk, onOpenManualTrade, cycling }) => {
+=======
+export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPause, onOpenRisk, onOpenTrade, cycling }) => {
+>>>>>>> Stashed changes
   const marketOpen = status?.market?.open;
   const paused = agent?.paused;
 
@@ -59,6 +63,17 @@ export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPaus
             style={{ color: paused ? "#00F0B5" : "#FFB800" }}>
             {paused ? <Play size={14} /> : <Pause size={14} />} {paused ? "RESUME" : "PAUSE"}
           </button>
+
+          {/* Trade Window */}
+          <motion.button
+            data-testid="open-trade-window-btn"
+            onClick={onOpenTrade}
+            whileTap={{ scale: 0.96 }}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-md font-mono text-xs font-bold"
+            style={{ background: "rgba(0,212,255,0.12)", border: "1.5px solid rgba(0,212,255,0.3)", color: "#00D4FF" }}>
+            <TrendingUp size={14} /> TRADE
+          </motion.button>
+
           <motion.button
             data-testid="agent-run-cycle-btn" onClick={onRunCycle} disabled={cycling}
             whileTap={{ scale: 0.96 }}

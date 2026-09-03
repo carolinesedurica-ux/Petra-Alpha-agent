@@ -23,6 +23,13 @@ export const closePosition = (id) => http.post(`/positions/${id}/close`).then((r
 export const evaluateOpportunity = (symbol) => http.post("/opportunities/evaluate", { symbol }).then((r) => r.data);
 export const openPosition = (payload) => http.post("/positions/open", payload).then((r) => r.data);
 
+// Trade Window APIs
+export const getMarketLive = () => http.get("/market/live").then((r) => r.data);
+export const getMarketBars = (symbol, limit = 30) =>
+  http.get(`/market/bars/${symbol}`, { params: { limit } }).then((r) => r.data);
+export const placeManualOrder = (body) =>
+  http.post("/orders/manual", body).then((r) => r.data);
+
 export async function streamChat(message, sessionId, onChunk) {
   const res = await fetch(`${API}/chat`, {
     method: "POST",

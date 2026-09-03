@@ -236,6 +236,64 @@ class MockAlpaca:
                                   "reason": reason, "position_id": position["id"], "mode": "mock"}, _close_payload(position, urgent), res)
         return res
 
+    async def place_equity_order(self, symbol, qty, side, order_type="market", limit_price=None):
+        """Simulate a simple equity or single-leg order fill."""
+        m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        sym_data = (m or {"symbols": {}}).get("symbols", {}).get(symbol, {})
+        fill_px = round(sym_data.get("price", 100.0) * random.uniform(0.998, 1.002), 2)
+        if order_type == "limit" and limit_price:
+            fill_px = float(limit_price)
+        notional = round(fill_px * qty, 2)
+        cash_delta = -notional if side == "buy" else notional
+        await self.apply_equity_delta(cash_delta)
+        order_id = f"mock-eq-{new_id()[:8]}"
+        payload = {"symbol": symbol, "qty": qty, "side": side, "type": order_type,
+                   "time_in_force": "day", "legs": []}
+        if limit_price:
+            payload["limit_price"] = limit_price
+        res = {"order_id": order_id, "status": "filled", "filled_price": fill_px,
+               "notional": notional, "alpaca_status": "filled"}
+        await log_order(self.db, {"intent": side, "underlying": symbol, "strategy": "equity",
+                                  "mode": "mock"}, payload, res)
+        return res
+
+    async def get_quote(self, symbol):
+        """Return a simulated bid/ask/volume quote for a symbol."""
+        m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        sym_data = (m or {"symbols": {}}).get("symbols", {}).get(symbol, {})
+        price = sym_data.get("price", UNIVERSE.get(symbol, {"px": 100.0})["px"])
+        iv = sym_data.get("iv", 0.20)
+        spread = max(0.01, price * 0.0015)
+        return {
+            "symbol": symbol,
+            "bid": round(price - spread, 2),
+            "ask": round(price + spread, 2),
+            "last": round(price, 2),
+            "volume": random.randint(500_000, 5_000_000),
+            "iv": round(iv, 4),
+            "change_pct": round((price / sym_data.get("day_open", price) - 1) * 100, 2) if sym_data.get("day_open") else 0.0,
+        }
+
+    async def get_bars(self, symbol, limit=30):
+        """Generate synthetic OHLCV bars for the sparkline chart."""
+        m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        price = (m or {"symbols": {}}).get("symbols", {}).get(symbol, {}).get("price",
+                 UNIVERSE.get(symbol, {"px": 100.0})["px"])
+        iv = UNIVERSE.get(symbol, {"iv": 0.20})["iv"]
+        bars = []
+        p = price * random.uniform(0.94, 1.0)
+        now_dt = datetime.now(timezone.utc)
+        for i in range(limit):
+            shock = random.gauss(0, iv / math.sqrt(252 * 6.5))
+            o = round(p, 2)
+            c = round(max(1.0, p * (1 + shock)), 2)
+            h = round(max(o, c) * random.uniform(1.0, 1.003), 2)
+            lo = round(min(o, c) * random.uniform(0.997, 1.0), 2)
+            bars.append({"t": (now_dt - timedelta(hours=limit - i)).isoformat(), "o": o, "h": h, "l": lo, "c": c,
+                         "v": random.randint(50_000, 500_000)})
+            p = c
+        return bars
+
 
 class LiveAlpaca:
     mode = "live"
@@ -534,6 +592,50 @@ class LiveAlpaca:
             "reason": reason, "position_id": position["id"], "mode": "live"})
         res["filled_debit"] = res.pop("filled_price")
         return res
+
+    async def place_equity_order(self, symbol, qty, side, order_type="market", limit_price=None):
+        """Place a simple equity order through Alpaca paper/live trading."""
+        payload = {"symbol": symbol, "qty": str(qty), "side": side, "type": order_type,
+                   "time_in_force": "day"}
+        if order_type == "limit" and limit_price:
+            payload["limit_price"] = str(limit_price)
+        res = await self._submit(payload, {"intent": side, "underlying": symbol,
+                                            "strategy": "equity", "mode": "live"})
+        return res
+
+    async def get_quote(self, symbol):
+        """Fetch live bid/ask/last/volume for a symbol from Alpaca IEX feed."""
+        try:
+            snap = await self._req("GET", self.data, "/v2/stocks/snapshots",
+                                   params={"symbols": symbol, "feed": "iex"})
+            s = snap.get(symbol, {})
+            trade = s.get("latestTrade") or {}
+            quote = s.get("latestQuote") or {}
+            daily = s.get("dailyBar") or {}
+            prev_daily = s.get("prevDailyBar") or {}
+            last = float(trade.get("p") or daily.get("c") or 0)
+            prev_close = float(prev_daily.get("c") or last or 1)
+            return {
+                "symbol": symbol,
+                "bid": float(quote.get("bp") or 0),
+                "ask": float(quote.get("ap") or 0),
+                "last": round(last, 2),
+                "volume": int(daily.get("v") or 0),
+                "change_pct": round((last / prev_close - 1) * 100, 2) if prev_close else 0.0,
+                "iv": None,
+            }
+        except Exception:
+            return {"symbol": symbol, "bid": 0, "ask": 0, "last": 0, "volume": 0, "change_pct": 0.0, "iv": None}
+
+    async def get_bars(self, symbol, limit=30):
+        """Fetch recent 1-hour OHLCV bars for sparkline chart."""
+        try:
+            data = await self._req("GET", self.data, f"/v2/stocks/{symbol}/bars",
+                                   params={"timeframe": "1Hour", "limit": limit, "feed": "iex", "sort": "asc"})
+            bars = data.get("bars") or []
+            return [{"t": b["t"], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]} for b in bars]
+        except Exception:
+            return []
 
 
 def make_alpaca(db):

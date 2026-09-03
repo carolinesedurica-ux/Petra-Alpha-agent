@@ -5,7 +5,8 @@ import { Toaster, toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   getAccount, getPositions, getTrades, getDecisions, getPnl, getStatus,
-  getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders, getModels,
+  getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders,
+  getModels, getMarketLive,
 } from "@/lib/api";
 import { HeaderTerminal } from "@/components/HeaderTerminal";
 import { MetricsRibbon } from "@/components/MetricsRibbon";
@@ -17,7 +18,13 @@ import { RiskConfigModal } from "@/components/RiskConfigModal";
 import { SpreadPayoffModal } from "@/components/SpreadPayoffModal";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { OrderBlotter } from "@/components/OrderBlotter";
+<<<<<<< Updated upstream
 import { ManualTradeModal } from "@/components/ManualTradeModal";
+=======
+import { MarketTickerStrip } from "@/components/MarketTickerStrip";
+import { TradeWindow } from "@/components/TradeWindow";
+import { BotActivityFeed } from "@/components/BotActivityFeed";
+>>>>>>> Stashed changes
 import { ScrollText, ShieldCheck, History, Receipt } from "lucide-react";
 
 const useLive = (key, fn, interval = 8000) =>
@@ -32,6 +39,7 @@ function App() {
   const { data: pnl } = useLive("pnl", getPnl, 12000);
   const { data: orders } = useLive("orders", getOrders, 6000);
   const { data: status } = useLive("status", getStatus, 6000);
+  const { data: liveMarket } = useLive("market-live", getMarketLive, 10000);
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   const { data: llm } = useQuery({ queryKey: ["models"], queryFn: getModels });
 
@@ -46,8 +54,22 @@ function App() {
     setManualTradeOpen(true);
   };
 
+  // Trade Window state
+  const [tradeOpen, setTradeOpen] = useState(false);
+  const [tradeSymbol, setTradeSymbol] = useState(null);
+
+  const openTrade = (symbolOrEvent) => {
+    if (symbolOrEvent && symbolOrEvent.symbol) {
+      // Called from MarketTickerStrip chip click
+      setTradeSymbol(symbolOrEvent.symbol);
+    } else {
+      setTradeSymbol(null);
+    }
+    setTradeOpen(true);
+  };
+
   const refetchAll = () =>
-    ["account", "positions", "trades", "decisions", "pnl", "status", "orders"].forEach((k) =>
+    ["account", "positions", "trades", "decisions", "pnl", "status", "orders", "market-live"].forEach((k) =>
       qc.invalidateQueries({ queryKey: [k] })
     );
 
@@ -87,11 +109,21 @@ function App() {
     <div data-testid="trading-terminal-root" className="min-h-screen grain">
       <Toaster theme="dark" position="top-right" toastOptions={{ style: { background: "#0c111a", border: "1px solid rgba(255,255,255,0.1)", color: "#e2e8f0", fontFamily: "JetBrains Mono", fontSize: 12 } }} />
 
+      {/* ── Header ── */}
       <HeaderTerminal
         account={account} status={status} agent={status?.agent} llm={llm}
         onRunCycle={() => cycleMut.mutate()} onPause={(p) => pauseMut.mutate(p)}
+<<<<<<< Updated upstream
         onOpenRisk={() => setRiskOpen(true)} onOpenManualTrade={() => handleOpenManualTrade(null)}
         cycling={cycleMut.isPending} />
+=======
+        onOpenRisk={() => setRiskOpen(true)}
+        onOpenTrade={() => openTrade(null)}
+        cycling={cycleMut.isPending} />
+
+      {/* ── Live Market Ticker Strip ── */}
+      <MarketTickerStrip liveMarket={liveMarket} onSymbolClick={openTrade} />
+>>>>>>> Stashed changes
 
       <main className="mx-auto max-w-[1600px] px-4 sm:px-6 py-5 space-y-5 relative z-10">
         <MetricsRibbon account={account} />
@@ -103,12 +135,18 @@ function App() {
               onPayoff={(p) => setPayoff(p)} closingId={closingId} />
           </div>
           <div className="xl:col-span-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-5">
+<<<<<<< Updated upstream
             <AgentReasoningPanel
               decisions={(decisions || []).slice(0, 30)}
               showGate={false}
               title="Live Decision Engine"
               onTradeOpportunity={handleOpenManualTrade}
             />
+=======
+            <AgentReasoningPanel decisions={(decisions || []).slice(0, 30)} showGate={false} title="Live Decision Engine" />
+            {/* Bot Activity Feed */}
+            <BotActivityFeed decisions={decisions} />
+>>>>>>> Stashed changes
             <AskAgentChat />
           </div>
         </div>
@@ -160,13 +198,24 @@ function App() {
         </footer>
       </main>
 
+      {/* ── Modals ── */}
       <RiskConfigModal open={riskOpen} onOpenChange={setRiskOpen} config={config} onSave={saveConfig} />
       <SpreadPayoffModal position={payoff} open={!!payoff} onOpenChange={(o) => !o && setPayoff(null)} />
+<<<<<<< Updated upstream
       <ManualTradeModal
         open={manualTradeOpen}
         onClose={() => setManualTradeOpen(false)}
         initialData={manualTradeData}
         onSuccess={refetchAll}
+=======
+
+      {/* ── Trade Window (slide-over) ── */}
+      <TradeWindow
+        open={tradeOpen}
+        onClose={() => setTradeOpen(false)}
+        initialSymbol={tradeSymbol}
+        liveMarket={liveMarket}
+>>>>>>> Stashed changes
       />
     </div>
   );
