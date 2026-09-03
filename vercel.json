@@ -1,0 +1,10 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd frontend && yarn install --frozen-lockfile && REACT_APP_BACKEND_URL= yarn build",
+  "functions": {
+    "backend/server.py": {
+      "maxDuration": 300,
+      "memory": 1024
+    }
+  }
+}

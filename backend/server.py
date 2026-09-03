@@ -1,9 +1,13 @@
 import os
+import sys
 import asyncio
 import logging
 
-from fastapi import FastAPI, APIRouter, Body, HTTPException
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from fastapi import FastAPI, APIRouter, Body, HTTPException, Header
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
 from database import db
@@ -20,6 +24,9 @@ app = FastAPI(title="Options Alpha Agent")
 api = APIRouter(prefix="/api")
 alpaca = make_alpaca(db)
 CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
+SERVERLESS = bool(os.environ.get("VERCEL"))
+TICK_MAX_CANDIDATES = int(os.environ.get("TICK_MAX_CANDIDATES", "3"))
+FRONTEND_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "build")
 
 
 async def autonomous_loop():
@@ -45,7 +52,8 @@ async def startup():
             await seed_demo(db, alpaca)
         except Exception as e:  # noqa
             logger.error(f"seed_demo failed: {e}")
-    asyncio.create_task(autonomous_loop())
+    if not SERVERLESS:
+        asyncio.create_task(autonomous_loop())
 
 
 @api.get("/")
@@ -151,6 +159,22 @@ async def agent_run_cycle(payload: dict = Body(default={})):
     return result
 
 
+@api.api_route("/agent/tick", methods=["GET", "POST"])
+async def agent_tick(authorization: str = Header(default="")):
+    """External scheduler hook (Vercel Cron / GitHub Actions). Runs one cycle if the market is open."""
+    secret = os.environ.get("CRON_SECRET")
+    if secret and authorization != f"Bearer {secret}":
+        raise HTTPException(status_code=401, detail="bad cron secret")
+    st = await get_agent_state(db)
+    if st.get("paused") or not st.get("autonomous", True):
+        return {"status": "paused"}
+    if not await alpaca.market_open():
+        return {"status": "market_closed"}
+    res = await run_cycle(db, alpaca, max_candidates=TICK_MAX_CANDIDATES)
+    return {"status": res["status"], "cycle_id": res["cycle_id"],
+            "decisions": len(res.get("decisions", [])), "exits": len(res.get("exits", []))}
+
+
 @api.post("/agent/pause")
 async def agent_pause(payload: dict = Body(default={})):
     paused = bool(payload.get("paused", True))
@@ -202,6 +226,8 @@ async def chat(payload: dict = Body(...)):
 
 
 app.include_router(api)
+if os.path.isdir(FRONTEND_BUILD):
+    app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
 app.add_middleware(
     CORSMiddleware, allow_credentials=True,
     allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),

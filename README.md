@@ -163,7 +163,53 @@ so mock data never mixes with the real account.
 - **Full audit trail.** Prompt, verdict, gate checks, every order (with Alpaca id, limit, fill, status) and exit reason are stored in MongoDB and rendered live.
 - **Benchmarked.** Equity is plotted against SPY buy-and-hold from the same start, so performance is judged as edge, not just P&L.
 
-## 9. Testing
+## 9. Deploy to Vercel
+
+The repo is laid out so a Git import into Vercel works with zero extra setup: `pyproject.toml` points
+Vercel at `backend.server:app` (one Python Fluid function), `vercel.json` builds the React app into
+`frontend/build`, and FastAPI serves that build from the same origin (promoted to the CDN). The API is
+under `/api/*`, the dashboard under `/`.
+
+1. Create a free **MongoDB Atlas** cluster → Database Access user → Network Access `0.0.0.0/0` → copy the `mongodb+srv://…` URI.
+2. **Vercel → New Project → import this repo.** Framework preset: *Other* (Vercel auto-detects FastAPI). Leave build settings to `vercel.json`.
+3. Set **Environment Variables** (Production):
+
+   | Key | Value |
+   |---|---|
+   | `MONGO_URL` | Atlas URI |
+   | `DB_NAME` | `petra` |
+   | `EMERGENT_LLM_KEY` | your key |
+   | `ALPACA_MODE` | `live` |
+   | `ALPACA_API_KEY` / `ALPACA_API_SECRET` | Alpaca **paper** keys |
+   | `ALPACA_TRADING_URL` | `https://paper-api.alpaca.markets/v2` |
+   | `ALPACA_DATA_URL` | `https://data.alpaca.markets` |
+   | `CRON_SECRET` | long random string — protects `/api/agent/tick` |
+   | `TICK_MAX_CANDIDATES` | `3` (use `1` on Hobby if ticks hit the time limit) |
+
+   `REACT_APP_BACKEND_URL` is intentionally left empty on Vercel → the dashboard calls its own origin.
+4. Deploy. Open the URL: header shows `PAPER LIVE` + your account number.
+
+### Scheduling the autonomous loop on Vercel
+
+Serverless functions can't run Petra's in-process 15-minute loop (it's disabled automatically when
+`VERCEL=1`). Instead `/api/agent/tick` runs **one cycle if the market is open** and is called by:
+
+- **GitHub Actions** (free, included): `.github/workflows/petra-tick.yml` fires every 15 min on weekdays.
+  Add two repository secrets: `PETRA_URL` = your Vercel URL (no trailing slash) and `CRON_SECRET` =
+  the same value you set on Vercel.
+- **Vercel Cron** (Pro plan — Hobby allows only daily schedules): add to `vercel.json`
+  ```json
+  "crons": [{ "path": "/api/agent/tick", "schedule": "*/15 13-21 * * 1-5" }]
+  ```
+  Vercel sends `Authorization: Bearer $CRON_SECRET` automatically.
+
+Manual trigger at any time:
+
+```bash
+curl -X POST https://<your-app>.vercel.app/api/agent/tick -H "Authorization: Bearer $CRON_SECRET"
+```
+
+## 10. Testing
 
 Backend integration tests (run against the live paper account, read-only apart from a forced cycle):
 
