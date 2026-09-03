@@ -1,4 +1,5 @@
 --extra-index-url https://d33sy5i8bnduwe.cloudfront.net/simple/
+litellm @ https://customer-assets.emergentagent.com/internal-asset/library/litellm-1.80.0-py3-none-any.whl#sha256=adf398c513273de9341f61822296c6b2145f7f2dc4a69daf3ac04829f5bde3f8
 fastapi==0.141.1
 starlette==1.6.0
 uvicorn==0.52.4
