@@ -314,6 +314,8 @@ class LiveAlpaca:
         events = []
         ours = set()
         for p in open_positions:
+            if p.get("paper_sim"):
+                continue
             syms = [l["symbol"] for l in p["legs"]]
             ours.update(syms)
             present = [s for s in syms if s in held]

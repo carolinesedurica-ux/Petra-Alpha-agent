@@ -184,6 +184,7 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
         dec.gate_passed = passed
         dec.proposed = {k: proposal[k] for k in ("strategy", "contracts", "width", "credit",
                         "max_risk", "credit_width_ratio", "short_delta", "dte")}
+        dec.proposal = proposal
 
         if not passed:
             fails = [c["label"] for c in checks if not c["passed"]]

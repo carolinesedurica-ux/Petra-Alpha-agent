@@ -13,11 +13,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
 from database import db
-from alpaca import make_alpaca
+from alpaca import make_alpaca, UNIVERSE
 from agent import (run_cycle, seed_demo, get_config, get_agent_state,
                    market_status, mark_positions, close_position as close_spread)
-from llm import chat_stream
-from models import RiskConfig
+from engines import build_spread, risk_gate
+from llm import chat_stream, get_verdict
+from models import RiskConfig, Position, Decision, now_iso, new_id
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("options_alpha")
@@ -250,6 +251,147 @@ async def close_position(position_id: str):
     return res
 
 
+@api.post("/opportunities/evaluate")
+async def evaluate_opportunity(payload: dict = Body(...)):
+    """Evaluate any underlying symbol on-demand: fetches live chain, runs LLM verdict, strike engine, and 7 risk gates."""
+    symbol = payload.get("symbol", "SPY").upper()
+    if symbol not in UNIVERSE:
+        raise HTTPException(status_code=400, detail=f"Symbol {symbol} not in universe {list(UNIVERSE.keys())}")
+    cfg = await get_config(db)
+    acc = await alpaca.get_account()
+    market = await alpaca.get_market()
+    m = market.get(symbol) or {"price": 500.0, "day_open": 500.0, "iv": 0.2, "trend": 0.0, "spacing": 1.0}
+    try:
+        chain = await alpaca.load_chain(symbol, m["price"], cfg)
+    except Exception:
+        chain = None
+    if chain:
+        m.update({k: chain[k] for k in ("iv", "spacing") if chain.get(k)})
+
+    live = alpaca.mode == "live"
+    snap = {
+        "symbol": symbol,
+        "price": m["price"],
+        "prev_price": m.get("prev_price", m["price"]),
+        "change_pct": round((m["price"] / m["day_open"] - 1) * 100, 2) if m.get("day_open") else 0.0,
+        "iv": m["iv"],
+        "trend": m["trend"],
+        "trend_label": "Change vs prior close" if live else "5-step trend bias",
+        "sentiment": "Live market scan" if live else "Operator request"
+    }
+    if chain:
+        snap["expiry"] = chain["expiry"]
+
+    verdict = await get_verdict(snap, f"eval-{new_id()[:6]}")
+    proposal = build_spread(alpaca, symbol, m["price"], m["iv"], m["spacing"], verdict, cfg, acc["equity"])
+    if not proposal:
+        return {
+            "symbol": symbol, "market": snap, "verdict": verdict,
+            "proposal": None, "gate_checks": [], "gate_passed": False, "gate_score": 0,
+            "error": "Strike engine could not construct valid strikes for this underlying/regime."
+        }
+
+    cur_open = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    checks, passed, score = risk_gate(proposal, cfg, acc["equity"], cur_open)
+
+    return {
+        "symbol": symbol,
+        "market": snap,
+        "verdict": verdict,
+        "proposal": proposal,
+        "gate_checks": checks,
+        "gate_passed": passed,
+        "gate_score": score
+    }
+
+
+@api.post("/positions/open")
+async def manual_open_position(payload: dict = Body(...)):
+    """Open a position manually after reviewing agent feedback and risk."""
+    proposal = payload.get("proposal")
+    decision_id = payload.get("decision_id")
+    override_contracts = payload.get("contracts")
+    paper_sim = bool(payload.get("paper_sim", True))
+
+    if not proposal and decision_id:
+        dec = await db.decisions.find_one({"id": decision_id}, {"_id": 0})
+        if dec and dec.get("proposal"):
+            proposal = dec["proposal"]
+
+    if not proposal:
+        raise HTTPException(status_code=400, detail="Missing trade proposal data")
+
+    cfg = await get_config(db)
+
+    if override_contracts and int(override_contracts) > 0:
+        proposal["contracts"] = min(int(override_contracts), 10)
+        risk_per = (proposal["width"] - proposal["credit"]) * 100
+        proposal["max_risk"] = round(risk_per * proposal["contracts"], 2)
+
+    cycle_id = f"man-{new_id()[:6]}"
+    try:
+        order = await alpaca.place_mleg(proposal, cycle_id=cycle_id)
+    except Exception as e:
+        order = {"order_id": "", "status": "error", "alpaca_status": str(e)[:200], "filled_credit": 0}
+
+    if order.get("status") == "filled":
+        credit = round(order.get("filled_credit") or proposal["credit"], 2)
+        order_id = order.get("order_id", f"mleg-{new_id()[:8]}")
+        fill_status = "filled"
+    elif paper_sim:
+        credit = proposal["credit"]
+        order_id = order.get("order_id") or f"paper-sim-{new_id()[:8]}"
+        fill_status = "simulated_paper_fill"
+    else:
+        raise HTTPException(status_code=400, detail=f"Order not filled: {order.get('alpaca_status', order.get('status'))}")
+
+    credit_cash = credit * 100 * proposal["contracts"]
+    pos = Position(
+        underlying=proposal["underlying"],
+        strategy=proposal["strategy"],
+        legs=proposal["legs"],
+        contracts=proposal["contracts"],
+        width=proposal["width"],
+        credit=credit,
+        max_risk=proposal["max_risk"],
+        entry_underlying=proposal.get("entry_underlying", 0.0),
+        entry_iv=proposal.get("entry_iv", 0.2),
+        dte=proposal["dte"],
+        expiry_ts=proposal["expiry_ts"],
+        tp_target=round(credit * (1 - cfg["tp_pct"]), 2),
+        stop_target=round(credit * cfg["stop_mult"], 2),
+        current_value=credit,
+        risk_gate_score=100,
+        alpaca_order_id=order_id,
+        paper_sim=fill_status == "simulated_paper_fill"
+    )
+    await db.positions.insert_one(pos.model_dump())
+
+    dec = Decision(
+        cycle_id=cycle_id,
+        underlying=proposal["underlying"],
+        strategy=proposal["strategy"],
+        outcome="approved",
+        gate_passed=True,
+        reason=f"MANUAL EXECUTION: {proposal['strategy']} x{proposal['contracts']} — credit ${credit_cash:,.0f} (order {order_id})",
+        position_id=pos.id,
+        proposed=proposal,
+        proposal=proposal
+    )
+    await db.decisions.insert_one(dec.model_dump())
+
+    open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    await alpaca.recompute_equity(open_pos)
+
+    return {
+        "success": True,
+        "position": pos.model_dump(),
+        "order": order,
+        "fill_status": fill_status,
+        "message": f"Opened {proposal['strategy']} x{proposal['contracts']} on {proposal['underlying']}"
+    }
+
+
 @api.post("/chat")
 async def chat(payload: dict = Body(...)):
     question = payload.get("message", "")
@@ -283,9 +425,12 @@ app.include_router(api)
 if os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
 app.add_middleware(
-    CORSMiddleware, allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"], allow_headers=["*"],
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
+    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
