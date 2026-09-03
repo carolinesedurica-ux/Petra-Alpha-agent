@@ -1,7 +1,8 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BACKEND_URL}/api`;
+const rawBackend = process.env.REACT_APP_BACKEND_URL;
+const BACKEND_URL = rawBackend ? rawBackend.replace(/\/+$/, "") : "";
+export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
 const http = axios.create({ baseURL: API });
 
@@ -18,6 +19,8 @@ export const updateConfig = (body) => http.put("/config", body).then((r) => r.da
 export const runCycle = () => http.post("/agent/run-cycle", { force: true }).then((r) => r.data);
 export const pauseAgent = (paused) => http.post("/agent/pause", { paused }).then((r) => r.data);
 export const closePosition = (id) => http.post(`/positions/${id}/close`).then((r) => r.data);
+export const evaluateOpportunity = (symbol) => http.post("/opportunities/evaluate", { symbol }).then((r) => r.data);
+export const openPosition = (payload) => http.post("/positions/open", payload).then((r) => r.data);
 
 export async function streamChat(message, sessionId, onChunk) {
   const res = await fetch(`${API}/chat`, {

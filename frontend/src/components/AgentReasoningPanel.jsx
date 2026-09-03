@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from "framer-motion";
-import { Brain, CheckCircle2, XCircle, CircleSlash, AlertTriangle, ArrowRight } from "lucide-react";
+import { Brain, CheckCircle2, XCircle, CircleSlash, AlertTriangle, ArrowRight, Zap } from "lucide-react";
 import { strategyMeta, timeAgo, fmtUsd } from "../lib/format";
 
 const outcomeMeta = {
@@ -45,7 +45,7 @@ const GateChecklist = ({ checks }) => (
   </div>
 );
 
-export const AgentReasoningPanel = ({ decisions, showGate = true, height = "540px", title = "Agent Decision Engine" }) => {
+export const AgentReasoningPanel = ({ decisions, showGate = true, height = "540px", title = "Agent Decision Engine", onTradeOpportunity }) => {
   return (
     <div className="term-card flex flex-col overflow-hidden" style={{ height }}>
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border)]">
@@ -88,13 +88,23 @@ export const AgentReasoningPanel = ({ decisions, showGate = true, height = "540p
                 {d.verdict && <VerdictBlock v={d.verdict} />}
 
                 {d.proposed && (
-                  <div className="flex items-center gap-2 mt-2 text-[10px] font-mono text-slate-500 flex-wrap">
-                    <ArrowRight size={11} className="text-slate-600" />
-                    <span>x{d.proposed.contracts}</span>
-                    <span>Δ{d.proposed.short_delta}</span>
-                    <span>{d.proposed.dte}DTE</span>
-                    <span>credit {(d.proposed.credit_width_ratio * 100).toFixed(0)}%</span>
-                    <span className="text-[#FFB800]">risk {fmtUsd(d.proposed.max_risk, 0)}</span>
+                  <div className="flex items-center justify-between gap-2 mt-2 pt-1">
+                    <div className="flex items-center gap-2 text-[10px] font-mono text-slate-500 flex-wrap">
+                      <ArrowRight size={11} className="text-slate-600" />
+                      <span>x{d.proposed.contracts}</span>
+                      <span>Δ{d.proposed.short_delta}</span>
+                      <span>{d.proposed.dte}DTE</span>
+                      <span>credit {(d.proposed.credit_width_ratio * 100).toFixed(0)}%</span>
+                      <span className="text-[#FFB800]">risk {fmtUsd(d.proposed.max_risk, 0)}</span>
+                    </div>
+                    {onTradeOpportunity && (
+                      <button
+                        onClick={() => onTradeOpportunity(d)}
+                        className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold text-[#06090e] bg-[#00F0B5] hover:bg-[#00D4FF] transition-all shadow-[0_0_8px_rgba(0,240,181,0.2)] shrink-0"
+                      >
+                        <Zap size={10} /> Open Position
+                      </button>
+                    )}
                   </div>
                 )}
 

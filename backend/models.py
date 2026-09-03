@@ -46,6 +46,7 @@ class Position(BaseModel):
     status: Literal["open", "closed"] = "open"
     exit_reason: Optional[str] = None
     realized_pnl: float = 0.0
+    paper_sim: bool = False
     opened_at: str = Field(default_factory=now_iso)
     closed_at: Optional[str] = None
 
@@ -73,6 +74,7 @@ class Decision(BaseModel):
     verdict: Optional[dict] = None
     strategy: Optional[str] = None
     proposed: Optional[dict] = None   # proposed spread summary
+    proposal: Optional[dict] = None   # full spread proposal with legs
     gate_checks: List[dict] = []
     gate_passed: bool = False
     outcome: str = "rejected"         # approved | rejected | skipped | error

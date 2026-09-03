@@ -17,6 +17,7 @@ import { RiskConfigModal } from "@/components/RiskConfigModal";
 import { SpreadPayoffModal } from "@/components/SpreadPayoffModal";
 import { TradeHistoryTable } from "@/components/TradeHistoryTable";
 import { OrderBlotter } from "@/components/OrderBlotter";
+import { ManualTradeModal } from "@/components/ManualTradeModal";
 import { ScrollText, ShieldCheck, History, Receipt } from "lucide-react";
 
 const useLive = (key, fn, interval = 8000) =>
@@ -36,6 +37,13 @@ function App() {
   const [riskOpen, setRiskOpen] = useState(false);
   const [payoff, setPayoff] = useState(null);
   const [closingId, setClosingId] = useState(null);
+  const [manualTradeOpen, setManualTradeOpen] = useState(false);
+  const [manualTradeData, setManualTradeData] = useState(null);
+
+  const handleOpenManualTrade = (proposalOrDecision = null) => {
+    setManualTradeData(proposalOrDecision);
+    setManualTradeOpen(true);
+  };
 
   const refetchAll = () =>
     ["account", "positions", "trades", "decisions", "pnl", "status", "orders"].forEach((k) =>
@@ -81,7 +89,8 @@ function App() {
       <HeaderTerminal
         account={account} status={status} agent={status?.agent}
         onRunCycle={() => cycleMut.mutate()} onPause={(p) => pauseMut.mutate(p)}
-        onOpenRisk={() => setRiskOpen(true)} cycling={cycleMut.isPending} />
+        onOpenRisk={() => setRiskOpen(true)} onOpenManualTrade={() => handleOpenManualTrade(null)}
+        cycling={cycleMut.isPending} />
 
       <main className="mx-auto max-w-[1600px] px-4 sm:px-6 py-5 space-y-5 relative z-10">
         <MetricsRibbon account={account} />
@@ -93,7 +102,12 @@ function App() {
               onPayoff={(p) => setPayoff(p)} closingId={closingId} />
           </div>
           <div className="xl:col-span-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-5">
-            <AgentReasoningPanel decisions={(decisions || []).slice(0, 30)} showGate={false} title="Live Decision Engine" />
+            <AgentReasoningPanel
+              decisions={(decisions || []).slice(0, 30)}
+              showGate={false}
+              title="Live Decision Engine"
+              onTradeOpportunity={handleOpenManualTrade}
+            />
             <AskAgentChat />
           </div>
         </div>
@@ -114,10 +128,22 @@ function App() {
               ))}
             </TabsList>
             <TabsContent value="decisions" className="p-3 mt-0">
-              <AgentReasoningPanel decisions={decisions} showGate height="480px" title="Full Reasoning + Gate Audit Trail" />
+              <AgentReasoningPanel
+                decisions={decisions}
+                showGate
+                height="480px"
+                title="Full Reasoning + Gate Audit Trail"
+                onTradeOpportunity={handleOpenManualTrade}
+              />
             </TabsContent>
             <TabsContent value="gate" className="p-3 mt-0">
-              <AgentReasoningPanel decisions={gateDecisions} showGate height="480px" title="Deterministic Risk-Gate Telemetry" />
+              <AgentReasoningPanel
+                decisions={gateDecisions}
+                showGate
+                height="480px"
+                title="Deterministic Risk-Gate Telemetry"
+                onTradeOpportunity={handleOpenManualTrade}
+              />
             </TabsContent>
             <TabsContent value="history" className="mt-0">
               <TradeHistoryTable trades={trades} />
@@ -135,6 +161,12 @@ function App() {
 
       <RiskConfigModal open={riskOpen} onOpenChange={setRiskOpen} config={config} onSave={saveConfig} />
       <SpreadPayoffModal position={payoff} open={!!payoff} onOpenChange={(o) => !o && setPayoff(null)} />
+      <ManualTradeModal
+        open={manualTradeOpen}
+        onClose={() => setManualTradeOpen(false)}
+        initialData={manualTradeData}
+        onSuccess={refetchAll}
+      />
     </div>
   );
 }
