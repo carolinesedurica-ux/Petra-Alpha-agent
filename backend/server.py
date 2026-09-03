@@ -397,10 +397,10 @@ async def chat(payload: dict = Body(...)):
     question = payload.get("message", "")
     session_id = payload.get("session_id", "operator")
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(50)
-    acc = await alpaca.get_account()
+    acc = (await alpaca.get_account()) or {}
     recent = await db.decisions.find({}, {"_id": 0}).sort("created_at", -1).to_list(8)
     context = {
-        "account": {"equity": acc["equity"], "buying_power": acc["buying_power"], "cash": acc["cash"]},
+        "account": {"equity": acc.get("equity", 100000.0), "buying_power": acc.get("buying_power", 100000.0), "cash": acc.get("cash", 100000.0)},
         "open_positions": [{"underlying": p["underlying"], "strategy": p["strategy"],
                             "legs": [f"{l['side']} {l['strike']}{l['option_type'][0].upper()}" for l in p["legs"]],
                             "credit": p["credit"], "contracts": p["contracts"],
