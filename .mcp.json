@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "alpaca": {
+      "command": "python",
+      "args": ["backend/run_alpaca_mcp.py"],
+      "env": {
+        "ALPACA_PAPER_TRADE": "true"
+      }
+    },
+    "petra-options-alpha": {
+      "command": "python",
+      "args": ["backend/petra_mcp_server.py"],
+      "env": {
+        "ALPACA_MODE": "live"
+      }
+    }
+  }
+}
