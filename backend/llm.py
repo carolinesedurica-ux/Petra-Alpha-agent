@@ -9,6 +9,9 @@ import json
 import re
 import logging
 from typing import Optional, Dict, Any, AsyncGenerator
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger("options_alpha.llm")
 
@@ -30,6 +33,7 @@ except ImportError:
 FEATHERLESS_KEY = os.environ.get("FEATHERLESS_API_KEY")
 FEATHERLESS_BASE = os.environ.get("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
 FEATHERLESS_MODEL = os.environ.get("FEATHERLESS_MODEL", "Qwen/Qwen3.6-35B-A3B")
+FEATHERLESS_CHAT_MODEL = os.environ.get("FEATHERLESS_CHAT_MODEL", "Qwen/Qwen2.5-32B-Instruct")
 
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 EMERGENT_MODEL = ("anthropic", "claude-sonnet-4-6")
@@ -181,40 +185,87 @@ async def get_verdict(snap: dict, cycle_id: str) -> dict:
 
 
 CHAT_SYSTEM = (
-    "You are Petra, an autonomous defined-risk options trader on an Alpaca "
-    "paper account. You trade credit spreads (put/call credit spreads, iron condors) gated "
-    "by a deterministic risk engine (max 2% risk/trade, max 5 concurrent, min 30% credit-to-width, "
-    "delta ~0.20 shorts, 2-7 DTE, TP at 50% of credit, stop at 2x). Answer the operator's "
-    "questions about your reasoning, positions, and risk clearly and concisely. Use the provided "
-    "portfolio context. Be candid about risk. Keep answers tight."
+    "You are Petra, an elite autonomous options trading assistant running defined-risk credit spreads on Alpaca paper trading.\n\n"
+    "CRITICAL RULES FOR RESPONDING:\n"
+    "1. Answer the operator's question directly, concisely, and conversationally.\n"
+    "2. NEVER repeat, rephrase, or echo the operator's question in your response.\n"
+    "3. NEVER mention 'JSON', 'the JSON', 'Jason', 'provided schema', 'data block', or 'context'. Talk like a professional human trader discussing real market positions.\n"
+    "4. Do NOT output raw JSON, code fences, or bullet dumps unless explicitly requested.\n"
+    "5. Do NOT use throat-clearing openings like 'Based on the provided portfolio...', 'Regarding your question...', 'Certainly!', or 'As Petra...'. Start immediately with the direct answer.\n"
+    "6. Ground all figures in the live portfolio metrics provided below."
 )
 
 
+def _format_chat_context(context: dict) -> str:
+    acc = context.get("account") or {}
+    equity = acc.get("equity", 0)
+    bp = acc.get("buying_power", 0)
+    cash = acc.get("cash", 0)
+
+    positions = context.get("open_positions") or []
+    if positions:
+        pos_strs = []
+        for p in positions:
+            legs = ", ".join(p.get("legs", []))
+            pnl = p.get("unrealized_pnl", 0)
+            pnl_sign = "+" if pnl >= 0 else ""
+            pos_strs.append(f"- {p['underlying']} {p['strategy']} x{p['contracts']}: legs [{legs}], credit ${p['credit']:.2f}, max risk ${p['max_risk']:,.0f}, unrealized P&L {pnl_sign}${pnl:,.2f}, DTE {p['dte']}")
+        pos_text = "\n".join(pos_strs)
+    else:
+        pos_text = "No open positions."
+
+    recent = context.get("recent_decisions") or []
+    if recent:
+        dec_strs = [f"- {d['underlying']}: {d['outcome'].upper()} ({d['reason']})" for d in recent[:4]]
+        dec_text = "\n".join(dec_strs)
+    else:
+        dec_text = "No recent decisions."
+
+    return (
+        f"LIVE ACCOUNT OVERVIEW:\n"
+        f"Equity: ${equity:,.2f} | Buying Power: ${bp:,.2f} | Cash: ${cash:,.2f}\n\n"
+        f"OPEN POSITIONS:\n{pos_text}\n\n"
+        f"RECENT AGENT DECISIONS:\n{dec_text}"
+    )
+
+
 async def chat_stream(question: str, context: dict, session_id: str) -> AsyncGenerator[str, None]:
-    prompt = f"PORTFOLIO CONTEXT (JSON):\n{json.dumps(context, default=str)}\n\nOPERATOR: {question}"
+    formatted_context = _format_chat_context(context)
+    prompt = (
+        f"{formatted_context}\n\n"
+        f"OPERATOR QUESTION: {question}\n\n"
+        f"Provide a direct, natural, concise response without repeating the question or mentioning JSON:"
+    )
     
     # Featherless stream
     if featherless_client:
         try:
             stream = await featherless_client.chat.completions.create(
-                model=FEATHERLESS_MODEL,
+                model=FEATHERLESS_CHAT_MODEL,
                 messages=[
                     {"role": "system", "content": CHAT_SYSTEM},
                     {"role": "user", "content": prompt}
                 ],
                 stream=True,
                 max_tokens=600,
-                temperature=0.3
+                temperature=0.4
             )
             has_tokens = False
-            async for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                content = delta.content or getattr(delta, "reasoning", "") or getattr(delta, "reasoning_content", "") or ""
-                if content:
-                    has_tokens = True
-                    yield content
+            try:
+                async for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    # Strictly use delta.content to prevent internal reasoning/thought scratchpad from leaking to the user
+                    content = delta.content or ""
+                    if content:
+                        has_tokens = True
+                        yield content
+            finally:
+                try:
+                    await stream.close()
+                except Exception:
+                    pass
             if has_tokens:
                 return
         except Exception as ex:
@@ -234,4 +285,4 @@ async def chat_stream(question: str, context: dict, session_id: str) -> AsyncGen
             logger.error(f"Emergent chat stream error: {ex}")
 
     # Fallback response
-    yield f"Petra AI Assistant [{FEATHERLESS_MODEL}]: Real-time paper trading on Alpaca is active. Deterministic risk gates and options strike engines are fully operational."
+    yield f"Live Alpaca paper trading is active with account equity of ${context.get('account', {}).get('equity', 100000):,.2f}. The deterministic strike engine and risk gates are currently monitoring the universe."
