@@ -184,6 +184,7 @@ under `/api/*`, the dashboard under `/`.
    | `ALPACA_TRADING_URL` | `https://paper-api.alpaca.markets/v2` |
    | `ALPACA_DATA_URL` | `https://data.alpaca.markets` |
    | `CRON_SECRET` | long random string — protects `/api/agent/tick` |
+   | `FEATHERLESS_API_KEY` (optional) | enables Featherless AI (Qwen 3.6) as primary signal model; Claude stays as fallback |
    | `TICK_MAX_CANDIDATES` | `3` (use `1` on Hobby if ticks hit the time limit) |
 
    `REACT_APP_BACKEND_URL` is intentionally left empty on Vercel → the dashboard calls its own origin.
