@@ -3,7 +3,7 @@
 
 **Team / Project:** Petra Options Alpha Agent  
 **Account Number:** `PA39X74UN8VF` (Fresh Paper Account, $100,000 Starting Equity, Level 3 Options)  
-**Live Stack:** FastAPI · React · Claude Sonnet 4.6 · Model Context Protocol (MCP) · Alpaca Trading & Data APIs  
+**Live Stack:** FastAPI · React · Featherless AI (Qwen 3.6 / DeepSeek R1) · Model Context Protocol (MCP) · Alpaca Trading & Data APIs  
 **Trading Strategy:** Defined-Risk Options Credit Spreads (Put Spreads, Call Spreads, Iron Condors)
 
 ---
