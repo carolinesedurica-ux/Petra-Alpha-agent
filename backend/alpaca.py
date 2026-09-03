@@ -141,11 +141,27 @@ class MockAlpaca:
         return market_status()["open"]
 
     async def get_account(self):
-        return await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        if not acc:
+            await self.ensure_seed()
+            acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        return acc or {
+            "id": "account", "mode": "mock", "account_number": "PA-ALPHA-PAPER-100K",
+            "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
+            "initial_equity": INITIAL_EQUITY, "day_start_equity": INITIAL_EQUITY,
+            "updated_at": now_iso(),
+        }
 
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
-        return m["symbols"]
+        if not m or "symbols" not in m:
+            await self.ensure_seed()
+            m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        if m and "symbols" in m:
+            return m["symbols"]
+        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
+                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
+                for s, cfg in UNIVERSE.items()}
 
     async def advance_market(self):
         """Random-walk each underlying one step, influenced by its trend."""
@@ -297,14 +313,15 @@ class MockAlpaca:
 
 class LiveAlpaca:
     mode = "live"
-
     def __init__(self, db):
         self.db = db
-        self.trading = os.environ["ALPACA_TRADING_URL"]
-        self.data = os.environ["ALPACA_DATA_URL"]
+        self.trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets")
+        self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets")
+        key = os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID", "")
+        secret = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY", "")
         self.http = httpx.AsyncClient(headers={
-            "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"],
-            "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET"],
+            "APCA-API-KEY-ID": key,
+            "APCA-API-SECRET-KEY": secret,
             "Accept": "application/json"}, timeout=20)
         self._chains = {}
         self._last_reconcile = None
@@ -348,7 +365,18 @@ class LiveAlpaca:
         return bool(clock["is_open"])
 
     async def get_account(self):
-        return await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        if not acc:
+            try:
+                await self.ensure_seed()
+                acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+            except Exception:
+                pass
+        return acc or {
+            "id": "account", "mode": "live", "account_number": "PAPER-OFFLINE",
+            "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
+            "initial_equity": INITIAL_EQUITY, "day_start_equity": INITIAL_EQUITY, "updated_at": now_iso()
+        }
 
     async def apply_equity_delta(self, cash_delta):
         return None  # Alpaca owns cash accounting in live mode
@@ -418,8 +446,16 @@ class LiveAlpaca:
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
         if not m or (datetime.now(timezone.utc) - datetime.fromisoformat(m["updated_at"])).total_seconds() > 45:
-            return await self.advance_market()
-        return m["symbols"]
+            try:
+                return await self.advance_market()
+            except Exception as e:  # noqa
+                pass
+        if m and "symbols" in m:
+            return m["symbols"]
+        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
+                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
+                for s, cfg in UNIVERSE.items()}
+
 
     async def advance_market(self):
         """Refresh IEX snapshots for the universe; IV/spacing persist from the last chain load."""
