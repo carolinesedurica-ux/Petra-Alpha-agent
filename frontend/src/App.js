@@ -5,7 +5,7 @@ import { Toaster, toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   getAccount, getPositions, getTrades, getDecisions, getPnl, getStatus,
-  getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders,
+  getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders, getModels,
 } from "@/lib/api";
 import { HeaderTerminal } from "@/components/HeaderTerminal";
 import { MetricsRibbon } from "@/components/MetricsRibbon";
@@ -33,6 +33,7 @@ function App() {
   const { data: orders } = useLive("orders", getOrders, 6000);
   const { data: status } = useLive("status", getStatus, 6000);
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
+  const { data: llm } = useQuery({ queryKey: ["models"], queryFn: getModels });
 
   const [riskOpen, setRiskOpen] = useState(false);
   const [payoff, setPayoff] = useState(null);
@@ -87,7 +88,7 @@ function App() {
       <Toaster theme="dark" position="top-right" toastOptions={{ style: { background: "#0c111a", border: "1px solid rgba(255,255,255,0.1)", color: "#e2e8f0", fontFamily: "JetBrains Mono", fontSize: 12 } }} />
 
       <HeaderTerminal
-        account={account} status={status} agent={status?.agent}
+        account={account} status={status} agent={status?.agent} llm={llm}
         onRunCycle={() => cycleMut.mutate()} onPause={(p) => pauseMut.mutate(p)}
         onOpenRisk={() => setRiskOpen(true)} onOpenManualTrade={() => handleOpenManualTrade(null)}
         cycling={cycleMut.isPending} />
@@ -155,7 +156,7 @@ function App() {
         </div>
 
         <footer className="text-center text-[10px] font-mono text-slate-700 py-4">
-          PETRA · OPTIONS ALPHA AGENT · LLM SIGNAL (FEATHERLESS AI · QWEN 3.6) → DETERMINISTIC STRIKE/SIZE ENGINE → HARD RISK GATE → ALPACA MLEG · PAPER {account?.mode?.toUpperCase()}
+          PETRA · OPTIONS ALPHA AGENT · LLM SIGNAL ({llm?.provider === "Featherless AI" ? `FEATHERLESS · ${llm.active_model.split("/").pop().toUpperCase()}` : "CLAUDE SONNET 4.6"}) → DETERMINISTIC STRIKE/SIZE ENGINE → HARD RISK GATE → ALPACA MLEG · PAPER {account?.mode?.toUpperCase()}
         </footer>
       </main>
 

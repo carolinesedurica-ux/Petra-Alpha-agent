@@ -1,0 +1,18 @@
+name: Petra agent tick
+
+on:
+  schedule:
+    # every 15 min, 13:00-21:00 UTC Mon-Fri (covers 09:30-16:00 ET in EDT and EST);
+    # the endpoint checks Alpaca's clock, so off-hours hits are no-ops
+    - cron: "*/15 13-21 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger agent cycle
+        run: |
+          curl -sS -X POST "${{ secrets.PETRA_URL }}/api/agent/tick" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            --max-time 290 --fail-with-body

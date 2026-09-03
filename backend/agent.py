@@ -108,7 +108,7 @@ async def open_slots(db, cfg):
     return max(0, cfg["max_concurrent"] - n)
 
 
-async def run_cycle(db, alpaca, force=False):
+async def run_cycle(db, alpaca, force=False, max_candidates=3):
     cfg = await get_config(db)
     state = await get_agent_state(db)
     cycle_id = new_id()[:8]
@@ -137,7 +137,7 @@ async def run_cycle(db, alpaca, force=False):
     slots = max(0, cfg["max_concurrent"] - len(open_pos))
     decisions_out = []
 
-    for sym in candidates[: min(3, max(1, slots) if slots else 1)]:
+    for sym in candidates[: min(max_candidates, max(1, slots) if slots else 1)]:
         if len([d for d in decisions_out if d["outcome"] == "approved"]) >= slots:
             break
         m = market[sym]

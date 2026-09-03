@@ -1,0 +1,6 @@
+memory
+test_reports
+backend/tests
+frontend/node_modules
+frontend/.env
+backend/.env

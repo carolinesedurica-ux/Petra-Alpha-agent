@@ -12,6 +12,7 @@ export const getTrades = () => http.get("/trades").then((r) => r.data);
 export const getDecisions = () => http.get("/decisions").then((r) => r.data);
 export const getPnl = () => http.get("/pnl").then((r) => r.data);
 export const getOrders = () => http.get("/orders").then((r) => r.data);
+export const getModels = () => http.get("/models").then((r) => r.data);
 export const getMarket = () => http.get("/market").then((r) => r.data);
 export const getStatus = () => http.get("/status").then((r) => r.data);
 export const getConfig = () => http.get("/config").then((r) => r.data);

@@ -53,6 +53,23 @@ Optimized for P&L + a clean write-up/demo for hackathon judges. FastAPI backend 
   benchmark), Order Blotter tab (db.orders via log_order for every open/close mleg; GET /api/orders),
   fixed left-column overflow (chart flex-1). Tested: iteration_3 backend 19/19 + frontend pass.
 
+- 2026-09-03 Vercel-ready: root pyproject.toml (tool.vercel entrypoint backend.server:app, static cdn),
+  root requirements.txt (minimal runtime deps + emergent extra index), vercel.json (frontend build with
+  empty REACT_APP_BACKEND_URL → same-origin, maxDuration 300), .vercelignore, backend/.env.example,
+  frontend/.env.example, .gitignore now ignores .env. server.py: sys.path shim, serves frontend/build via
+  StaticFiles when present, skips in-process loop when VERCEL=1, new GET/POST /api/agent/tick (Bearer
+  CRON_SECRET, runs one cycle if market open, TICK_MAX_CANDIDATES). GitHub Actions workflow
+  .github/workflows/petra-tick.yml hits tick every 15 min weekdays (secrets PETRA_URL, CRON_SECRET).
+  Verified locally with VERCEL=1 TestClient (static /, /api/*, tick 401/200) — real Vercel deploy untested.
+
+- 2026-09-03 Merged GitHub main (carolinesedurica-ux/Petra-Alpha-agent, PR #1 by rasali535): Featherless AI
+  as optional primary signal/chat provider (FEATHERLESS_API_KEY; Claude Sonnet 4.6 remains fallback and is
+  active here since no Featherless key is set), Alpaca MCP server runner + Petra MCP server (fastmcp,
+  .mcp.json), /api/models, /api/mcp/status, SUBMISSION_WRITEUP.md, mongomock fallback in database.py.
+  Resolved server.py import conflict; upgraded fastapi 0.110→0.141 (fastmcp pulled starlette 1.6);
+  header LLM badge + footer now reflect the actual provider from /api/models. Merge committed locally
+  (f24b8eb) — user must push via "Save to GitHub".
+
 ## Backlog / next
 - P1: Optional MCP server layer for external "talk to the agent".
 - P2: Reconcile realized P&L for assigned/external closes uses last mark (estimate) — could pull Alpaca account activities for exact fills.
