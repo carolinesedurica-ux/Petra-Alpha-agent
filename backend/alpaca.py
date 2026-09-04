@@ -16,10 +16,33 @@ import math
 import httpx
 from datetime import datetime, timezone, timedelta, date
 
+from pathlib import Path
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env", override=True)
+load_dotenv(ROOT_DIR.parent / ".env", override=True)
+
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
 
-MODE = os.environ.get("ALPACA_MODE", "mock")
+
+def get_alpaca_mode():
+    explicit = os.environ.get("ALPACA_MODE")
+    if explicit:
+        return explicit.strip().lower()
+    has_key = bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID"))
+    has_secret = bool(
+        os.environ.get("ALPACA_API_SECRET")
+        or os.environ.get("ALPACA_SECRET_KEY")
+        or os.environ.get("APCA_API_SECRET_KEY")
+    )
+    if has_key and has_secret:
+        return "live"
+    return "mock"
+
+
+MODE = get_alpaca_mode()
 
 try:
     from zoneinfo import ZoneInfo
@@ -572,4 +595,5 @@ class LiveAlpaca:
 
 
 def make_alpaca(db):
-    return LiveAlpaca(db) if MODE == "live" else MockAlpaca(db)
+    mode = get_alpaca_mode()
+    return LiveAlpaca(db) if mode == "live" else MockAlpaca(db)
