@@ -256,6 +256,7 @@ async def close_position(position_id: str):
 @api.post("/opportunities/evaluate")
 async def evaluate_opportunity(payload: dict = Body(...)):
     """Evaluate any underlying symbol on-demand: fetches live chain, runs LLM verdict, strike engine, and 7 risk gates."""
+    await alpaca.ensure_seed()
     symbol = payload.get("symbol", "SPY").upper()
     if symbol not in UNIVERSE:
         raise HTTPException(status_code=400, detail=f"Symbol {symbol} not in universe {list(UNIVERSE.keys())}")

@@ -38,18 +38,16 @@ FEATHERLESS_CHAT_MODEL = os.environ.get("FEATHERLESS_CHAT_MODEL", "Qwen/Qwen2.5-
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 EMERGENT_MODEL = ("anthropic", "claude-sonnet-4-6")
 
-# Active provider detection
-featherless_client: Optional[Any] = None
-if FEATHERLESS_KEY and AsyncOpenAI:
+def _get_featherless_client():
+    key = os.environ.get("FEATHERLESS_API_KEY")
+    if not key or not AsyncOpenAI:
+        return None
+    base = os.environ.get("FEATHERLESS_BASE_URL", "https://api.featherless.ai/v1")
     try:
-        featherless_client = AsyncOpenAI(
-            base_url=FEATHERLESS_BASE,
-            api_key=FEATHERLESS_KEY,
-            timeout=45.0
-        )
-        logger.info(f"Featherless AI initialized with model: {FEATHERLESS_MODEL}")
+        return AsyncOpenAI(base_url=base, api_key=key, timeout=45.0)
     except Exception as e:
         logger.error(f"Failed to initialize Featherless AI client: {e}")
+        return None
 
 SIGNAL_SYSTEM = (
     "You are the SIGNAL layer of an autonomous options-trading agent that trades "
@@ -68,10 +66,11 @@ SIGNAL_SYSTEM = (
 
 async def _complete_featherless(system: str, prompt: str) -> str:
     """Call Featherless API using AsyncOpenAI, returning combined content + reasoning."""
-    if not featherless_client:
+    client = _get_featherless_client()
+    if not client:
         raise RuntimeError("Featherless client not initialized")
     
-    response = await featherless_client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=FEATHERLESS_MODEL,
         messages=[
             {"role": "system", "content": system},
@@ -155,7 +154,7 @@ async def get_verdict(snap: dict, cycle_id: str) -> dict:
     )
     
     # 1. Primary: Featherless AI
-    if featherless_client:
+    if _get_featherless_client():
         try:
             raw = await _complete_featherless(SIGNAL_SYSTEM, prompt)
             m = re.search(r"\{[\s\S]*?\}", raw)
@@ -238,9 +237,10 @@ async def chat_stream(question: str, context: dict, session_id: str) -> AsyncGen
     )
     
     # Featherless stream
-    if featherless_client:
+    client = _get_featherless_client()
+    if client:
         try:
-            stream = await featherless_client.chat.completions.create(
+            stream = await client.chat.completions.create(
                 model=FEATHERLESS_CHAT_MODEL,
                 messages=[
                     {"role": "system", "content": CHAT_SYSTEM},
