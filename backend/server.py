@@ -60,6 +60,7 @@ async def startup():
 
 
 @api.get("/")
+@api.get("/health")
 async def root():
     return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
 
@@ -121,19 +122,20 @@ async def account():
     await mark_positions(db, alpaca)
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     equity, bp = await alpaca.recompute_equity(open_pos)
-    acc = await alpaca.get_account()
+    acc = (await alpaca.get_account()) or {}
     closed = await db.positions.find({"status": "closed"}, {"_id": 0}).to_list(1000)
     wins = [c for c in closed if c["realized_pnl"] > 0]
     win_rate = round(len(wins) / len(closed) * 100, 1) if closed else 0.0
-    day_pnl = round(equity - acc.get("day_start_equity", equity), 2)
     day_start = acc.get("day_start_equity", equity) or equity
+    day_pnl = round(equity - day_start, 2)
     open_risk = round(sum(p["max_risk"] for p in open_pos), 2)
     risk_cap = equity * 0.10
+    init_eq = acc.get("initial_equity", equity) or equity
     return {
-        "equity": equity, "buying_power": bp, "cash": acc["cash"],
-        "initial_equity": acc["initial_equity"],
-        "total_pnl": round(equity - acc["initial_equity"], 2),
-        "total_pnl_pct": round((equity / acc["initial_equity"] - 1) * 100, 2),
+        "equity": equity, "buying_power": bp, "cash": acc.get("cash", equity),
+        "initial_equity": init_eq,
+        "total_pnl": round(equity - init_eq, 2),
+        "total_pnl_pct": round((equity / init_eq - 1) * 100, 2) if init_eq else 0.0,
         "day_pnl": day_pnl,
         "day_pnl_pct": round(day_pnl / day_start * 100, 2) if day_start else 0.0,
         "open_risk": open_risk,
@@ -163,10 +165,11 @@ async def decisions(limit: int = 60):
 @api.get("/pnl")
 async def pnl():
     snaps = await db.pnl_snapshots.find({}, {"_id": 0}).sort("ts", 1).to_list(2000)
-    acc = await alpaca.get_account()
+    acc = (await alpaca.get_account()) or {}
+    init_eq = acc.get("initial_equity", 100000.0)
     base = next((s["spy"] for s in snaps if s.get("spy")), None)
     for s in snaps:
-        s["benchmark"] = round(acc["initial_equity"] * s["spy"] / base, 2) if base and s.get("spy") else None
+        s["benchmark"] = round(init_eq * s["spy"] / base, 2) if base and s.get("spy") else None
     return snaps
 
 

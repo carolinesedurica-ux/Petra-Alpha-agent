@@ -43,8 +43,8 @@ export const EquityChart = ({ pnl, initialEquity = 100000 }) => {
           )}
         </div>
       </div>
-      <div className="flex-1 min-h-[240px] relative">
-        <ResponsiveContainer width="100%" height="100%">
+      <div className="flex-1 min-h-[240px] min-w-0 relative w-full">
+        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
           <AreaChart data={data} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">

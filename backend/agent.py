@@ -283,6 +283,78 @@ async def seed_demo(db, alpaca):
     await db.account.update_one({"id": "account"}, {"$set": {
         "equity": round(equity, 2), "cash": round(equity, 2),
         "buying_power": round(equity, 2), "day_start_equity": round(equity - 900, 2)}})
-    # run a few live cycles so we have open positions + fresh decisions
-    for _ in range(5):
-        await run_cycle(db, alpaca, force=True)
+
+    # Seed realistic initial open positions and decisions instantly without blocking startup
+    open_positions = [
+        Position(
+            underlying="SPY",
+            strategy="put_credit_spread",
+            legs=[
+                {"symbol": "SPY260918P00535000", "side": "sell", "strike": 535.0, "option_type": "put", "delta": -0.22, "price": 1.45},
+                {"symbol": "SPY260918P00533000", "side": "buy", "strike": 533.0, "option_type": "put", "delta": -0.16, "price": 0.60}
+            ],
+            contracts=3, width=2.0, credit=0.85, max_risk=345.0,
+            entry_underlying=market.get("SPY", {}).get("price", 545.0),
+            entry_iv=market.get("SPY", {}).get("iv", 0.15),
+            dte=14, expiry_ts=(datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
+            tp_target=0.42, stop_target=1.70, current_value=0.72,
+            unrealized_pnl=39.0, risk_gate_score=100, status="open",
+            opened_at=(base + timedelta(hours=36)).isoformat(),
+            alpaca_order_id=f"mock-{new_id()[:8]}"
+        ),
+        Position(
+            underlying="NVDA",
+            strategy="call_credit_spread",
+            legs=[
+                {"symbol": "NVDA260918C00135000", "side": "sell", "strike": 135.0, "option_type": "call", "delta": 0.24, "price": 1.65},
+                {"symbol": "NVDA260918C00137500", "side": "buy", "strike": 137.5, "option_type": "call", "delta": 0.17, "price": 0.70}
+            ],
+            contracts=4, width=2.5, credit=0.95, max_risk=620.0,
+            entry_underlying=market.get("NVDA", {}).get("price", 130.0),
+            entry_iv=market.get("NVDA", {}).get("iv", 0.48),
+            dte=14, expiry_ts=(datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
+            tp_target=0.48, stop_target=1.90, current_value=0.82,
+            unrealized_pnl=52.0, risk_gate_score=100, status="open",
+            opened_at=(base + timedelta(hours=38)).isoformat(),
+            alpaca_order_id=f"mock-{new_id()[:8]}"
+        )
+    ]
+    for p in open_positions:
+        await db.positions.insert_one(p.model_dump())
+
+    demo_decisions = [
+        Decision(
+            cycle_id=f"init-{new_id()[:6]}", underlying="SPY",
+            outcome="approved",
+            strategy="put_credit_spread",
+            position_id=open_positions[0].id,
+            reason="APPROVED put_credit_spread x3 — credit $255, max risk $345, order mock-ord-01",
+            gate_passed=True,
+            verdict={"regime": "trending_up", "direction": "bullish", "confidence": 0.82,
+                     "chosen_strategy": "put_credit_spread", "rationale": "SPY consolidating above support. Selling 535/533 put spread.", "source": "featherless:Qwen3.6-35B-A3B"}
+        ),
+        Decision(
+            cycle_id=f"init-{new_id()[:6]}", underlying="NVDA",
+            outcome="approved",
+            strategy="call_credit_spread",
+            position_id=open_positions[1].id,
+            reason="APPROVED call_credit_spread x4 — credit $380, max risk $620, order mock-ord-02",
+            gate_passed=True,
+            verdict={"regime": "range_bound", "direction": "neutral", "confidence": 0.74,
+                     "chosen_strategy": "call_credit_spread", "rationale": "NVDA high IV percentile, resistance at 135. Selling 135/137.5 call spread.", "source": "featherless:Qwen3.6-35B-A3B"}
+        ),
+        Decision(
+            cycle_id=f"init-{new_id()[:6]}", underlying="TSLA",
+            outcome="rejected",
+            strategy="iron_condor",
+            reason="Risk gate REJECTED: Min open interest >= 150 failed on short leg (OI: 45)",
+            gate_passed=False,
+            verdict={"regime": "high_volatility", "direction": "neutral", "confidence": 0.65,
+                     "chosen_strategy": "iron_condor", "rationale": "TSLA volatile ahead of earnings.", "source": "featherless:Qwen3.6-35B-A3B"}
+        )
+    ]
+    for d in demo_decisions:
+        await db.decisions.insert_one(d.model_dump())
+
+    open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    await alpaca.recompute_equity(open_pos)

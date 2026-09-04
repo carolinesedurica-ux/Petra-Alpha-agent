@@ -63,8 +63,8 @@ export const SpreadPayoffModal = ({ position, open, onOpenChange }) => {
             <div className="font-mono font-bold text-slate-200">{breakevens.map((b) => fmtNum(b, 1)).join(" / ") || "—"}</div></div>
         </div>
 
-        <div className="h-[260px]">
-          <ResponsiveContainer width="100%" height="100%">
+        <div className="h-[260px] min-w-0 w-full">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={260}>
             <LineChart data={data} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
               <XAxis dataKey="S" tick={{ fill: "#475569", fontSize: 10, fontFamily: "JetBrains Mono" }}
                 axisLine={{ stroke: "rgba(255,255,255,0.06)" }} tickLine={false} minTickGap={40} />

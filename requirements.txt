@@ -9,3 +9,5 @@ httpx==0.28.1
 pydantic==2.13.4
 emergentintegrations==0.2.0
 openai==1.99.9
+mongomock==4.3.0
+mongomock-motor==0.0.36

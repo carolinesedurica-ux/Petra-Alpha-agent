@@ -141,7 +141,11 @@ class MockAlpaca:
         return market_status()["open"]
 
     async def get_account(self):
-        return await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        if not acc:
+            await self.ensure_seed()
+            acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        return acc
 
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
@@ -290,7 +294,11 @@ class LiveAlpaca:
         return bool(clock["is_open"])
 
     async def get_account(self):
-        return await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        if not acc:
+            await self.ensure_seed()
+            acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        return acc
 
     async def apply_equity_delta(self, cash_delta):
         return None  # Alpaca owns cash accounting in live mode
