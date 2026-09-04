@@ -1,6 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "create-react-app",
   "buildCommand": "cd frontend && yarn install --frozen-lockfile && REACT_APP_BACKEND_URL= yarn build",
   "outputDirectory": "frontend/build",
   "functions": {
