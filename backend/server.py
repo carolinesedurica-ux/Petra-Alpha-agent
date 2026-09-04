@@ -94,7 +94,6 @@ async def startup():
         asyncio.create_task(autonomous_loop())
 
 
-@api.get("/")
 @api.get("/health")
 async def root():
     return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
@@ -484,8 +483,42 @@ async def chat(payload: dict = Body(...)):
 
 app.include_router(api, prefix="/api")
 app.include_router(api)
-if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
-    app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
+INDEX_HTML = os.path.join(FRONTEND_BUILD, "index.html")
+STATIC_DIR = os.path.join(FRONTEND_BUILD, "static")
+
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+@app.get("/")
+@app.get("/index.html")
+async def serve_index():
+    if os.path.isfile(INDEX_HTML):
+        with open(INDEX_HTML, "r", encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="text/html")
+    return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
+
+@app.get("/favicon.ico")
+async def serve_favicon_ico():
+    fav = os.path.join(FRONTEND_BUILD, "favicon.ico")
+    if os.path.isfile(fav):
+        with open(fav, "rb") as f:
+            return Response(content=f.read(), media_type="image/x-icon")
+    return Response(status_code=204)
+
+@app.get("/favicon.svg")
+async def serve_favicon_svg():
+    fav = os.path.join(FRONTEND_BUILD, "favicon.svg")
+    if os.path.isfile(fav):
+        with open(fav, "rb") as f:
+            return Response(content=f.read(), media_type="image/svg+xml")
+    return Response(status_code=204)
+
+@app.get("/{full_path:path}")
+async def serve_spa_fallback(full_path: str):
+    if not full_path.startswith("api") and os.path.isfile(INDEX_HTML):
+        with open(INDEX_HTML, "r", encoding="utf-8") as f:
+            return Response(content=f.read(), media_type="text/html")
+    raise HTTPException(status_code=404, detail="Not Found")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
