@@ -13,16 +13,19 @@ import os
 import asyncio
 import random
 import math
-from datetime import datetime, timezone, timedelta, date
-from zoneinfo import ZoneInfo
-
 import httpx
 
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
 
 MODE = os.environ.get("ALPACA_MODE", "mock")
-ET = ZoneInfo("America/New_York")
+
+try:
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+except Exception:
+    from datetime import timezone, timedelta
+    ET = timezone(timedelta(hours=-4))
 
 # Liquid, tight-spread underlyings. (base price, annualized IV, strike spacing) — mock defaults
 UNIVERSE = {

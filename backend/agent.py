@@ -1,14 +1,17 @@
 """Agent orchestration: position management + trade cycle + demo seeding."""
 import random
 from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
-
+try:
+    from zoneinfo import ZoneInfo
+    ET = ZoneInfo("America/New_York")
+except Exception:
+    from datetime import timezone, timedelta
+    ET = timezone(timedelta(hours=-4))
 from alpaca import UNIVERSE, record_snapshot
 from engines import build_spread, risk_gate
 from llm import get_verdict
 from models import Position, Decision, RiskConfig, AgentState, now_iso, new_id
 
-ET = ZoneInfo("America/New_York")
 SENTIMENTS = ["neutral wire flow", "mild bullish tape", "cautious / mixed headlines",
               "risk-off chatter", "earnings drift", "macro data pending", "steady bid"]
 
