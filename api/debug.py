@@ -1,50 +1,55 @@
 import sys
 import os
 import traceback
-from http.server import BaseHTTPRequestHandler
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
-class handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain; charset=utf-8')
-        self.end_headers()
-        
-        info = []
-        info.append(f"Python Version: {sys.version}")
-        info.append(f"Current Directory: {os.getcwd()}")
+app = FastAPI(title="Petra Debug Endpoint")
+
+@app.get("/api/debug")
+@app.get("/debug")
+async def debug_endpoint():
+    res = {
+        "status": "ok",
+        "python": sys.version,
+        "cwd": os.getcwd(),
+        "files_root": os.listdir(".") if os.path.exists(".") else [],
+        "sys_path": sys.path,
+        "env_has_alpaca_key": bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")),
+        "env_has_alpaca_secret": bool(os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET") or os.environ.get("APCA_API_SECRET_KEY")),
+        "env_has_featherless_key": bool(os.environ.get("FEATHERLESS_API_KEY")),
+        "env_keys": [k for k in os.environ.keys() if "KEY" not in k and "SECRET" not in k],
+    }
+
+    # Check packages
+    pkg_status = {}
+    for pkg in ["fastapi", "starlette", "motor", "pymongo", "mongomock", "mongomock_motor", "httpx", "pydantic", "openai"]:
         try:
-            info.append(f"Files in Current Directory: {os.listdir('.')}")
+            mod = __import__(pkg)
+            pkg_status[pkg] = "OK"
         except Exception as e:
-            info.append(f"Cannot list current dir: {e}")
-            
-        if os.path.exists("api"):
-            info.append(f"Files in api/: {os.listdir('api')}")
-        else:
-            info.append("api/ DOES NOT EXIST")
-            
-        if os.path.exists("backend"):
-            info.append(f"Files in backend/: {os.listdir('backend')}")
-        else:
-            info.append("backend/ DOES NOT EXIST")
-            
-        # Try importing dependencies
-        for pkg in ["fastapi", "starlette", "motor", "pymongo", "mongomock", "mongomock_motor", "httpx", "pydantic", "openai"]:
-            try:
-                __import__(pkg)
-                info.append(f"Package {pkg}: INSTALLED")
-            except Exception as e:
-                info.append(f"Package {pkg}: MISSING ({e})")
-                
-        # Try importing backend.server
-        try:
-            backend_path = os.path.abspath("backend")
-            if backend_path not in sys.path:
-                sys.path.insert(0, backend_path)
-            import server
-            info.append("SUCCESS: imported server.py!")
-        except Exception as e:
-            info.append(f"FAILED importing server.py:\n{traceback.format_exc()}")
-            
-        output = "\n----------------------------------------\n".join(info)
-        self.wfile.write(output.encode('utf-8'))
-        return
+            pkg_status[pkg] = f"FAILED: {e}"
+    res["packages"] = pkg_status
+
+    # Check backend directory
+    curr_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(curr_dir, ".."))
+    res["paths_checked"] = {
+        "curr_dir": curr_dir,
+        "root_dir": root_dir,
+        "api_exists": os.path.exists(os.path.join(root_dir, "api")),
+        "backend_exists": os.path.exists(os.path.join(root_dir, "backend")),
+        "backend_files": os.listdir(os.path.join(root_dir, "backend")) if os.path.exists(os.path.join(root_dir, "backend")) else [],
+    }
+
+    # Check importing backend.server
+    try:
+        for p in [os.path.join(root_dir, "backend"), os.path.join(curr_dir, "backend"), "backend", root_dir]:
+            if os.path.exists(p) and p not in sys.path:
+                sys.path.insert(0, p)
+        import server
+        res["import_server"] = "OK"
+    except Exception as e:
+        res["import_server"] = f"FAILED: {traceback.format_exc()}"
+
+    return JSONResponse(content=res)

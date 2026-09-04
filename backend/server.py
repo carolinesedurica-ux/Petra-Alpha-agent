@@ -61,7 +61,10 @@ async def autonomous_loop():
 
 @app.on_event("startup")
 async def startup():
-    await alpaca.ensure_seed()
+    try:
+        await alpaca.ensure_seed()
+    except Exception as e:
+        logger.error(f"ensure_seed failed on startup: {e}")
     if alpaca.mode == "mock":
         try:
             await seed_demo(db, alpaca)
@@ -437,7 +440,7 @@ async def chat(payload: dict = Body(...)):
 
 
 app.include_router(api)
-if os.path.isdir(FRONTEND_BUILD):
+if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
 app.add_middleware(
     CORSMiddleware,

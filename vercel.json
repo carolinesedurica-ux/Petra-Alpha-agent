@@ -3,6 +3,11 @@
   "buildCommand": "cd frontend && yarn install --frozen-lockfile && REACT_APP_BACKEND_URL= yarn build",
   "outputDirectory": "frontend/build",
   "functions": {
+    "api/*.py": {
+      "includeFiles": "backend/**",
+      "maxDuration": 60,
+      "memory": 1024
+    },
     "api/**/*.py": {
       "includeFiles": "backend/**",
       "maxDuration": 60,
