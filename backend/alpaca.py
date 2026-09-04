@@ -246,11 +246,22 @@ class LiveAlpaca:
 
     def __init__(self, db):
         self.db = db
-        self.trading = os.environ["ALPACA_TRADING_URL"]
-        self.data = os.environ["ALPACA_DATA_URL"]
+        self.trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets/v2").rstrip("/")
+        self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
+        api_key = (
+            os.environ.get("ALPACA_API_KEY")
+            or os.environ.get("APCA_API_KEY_ID")
+            or ""
+        )
+        api_secret = (
+            os.environ.get("ALPACA_API_SECRET")
+            or os.environ.get("ALPACA_SECRET_KEY")
+            or os.environ.get("APCA_API_SECRET_KEY")
+            or ""
+        )
         self.http = httpx.AsyncClient(headers={
-            "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY"],
-            "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET"],
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
             "Accept": "application/json"}, timeout=20)
         self._chains = {}
         self._last_reconcile = None
