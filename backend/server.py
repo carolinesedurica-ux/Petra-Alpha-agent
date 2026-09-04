@@ -457,7 +457,7 @@ async def chat(payload: dict = Body(...)):
 
 
 app.include_router(api)
-if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
+if os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
 app.add_middleware(
     CORSMiddleware,

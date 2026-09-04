@@ -15,3 +15,9 @@ dependencies = [
     "mongomock>=4.3.0",
     "mongomock-motor>=0.0.36"
 ]
+
+[tool.vercel]
+entrypoint = "backend.server:app"
+
+[tool.vercel.fastapi.static]
+cdn = true

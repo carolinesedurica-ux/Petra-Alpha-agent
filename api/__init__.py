@@ -1,1 +1,0 @@
-# Petra API Serverless Package
