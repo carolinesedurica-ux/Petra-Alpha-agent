@@ -48,6 +48,9 @@ dump.rdb
 # System files
 .DS_Store
 *.pem
+*.petra_*.json
+.petra_*.json
+scratch/
 
 # Python
 __pycache__/

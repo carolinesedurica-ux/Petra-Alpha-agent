@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import "@/App.css";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Toaster, toast } from "sonner";
@@ -48,6 +48,31 @@ function App() {
   const [manualTradeOpen, setManualTradeOpen] = useState(false);
   const [manualTradeData, setManualTradeData] = useState(null);
 
+  // Client-side cache to guarantee agent cycle outcomes stay permanently in view
+  const [localDecisions, setLocalDecisions] = useState(() => {
+    try {
+      const saved = localStorage.getItem("petra_decisions_v2");
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
+    }
+  });
+
+  const mergedDecisions = useMemo(() => {
+    const map = new Map();
+    (decisions || []).forEach((d) => {
+      const key = d.id || `${d.cycle_id}-${d.underlying}-${d.created_at}`;
+      map.set(key, d);
+    });
+    (localDecisions || []).forEach((d) => {
+      const key = d.id || `${d.cycle_id}-${d.underlying}-${d.created_at}`;
+      if (!map.has(key)) map.set(key, d);
+    });
+    return Array.from(map.values()).sort(
+      (a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0)
+    );
+  }, [decisions, localDecisions]);
+
   const handleOpenManualTrade = (proposalOrDecision = null) => {
     setManualTradeData(proposalOrDecision);
     setManualTradeOpen(true);
@@ -78,6 +103,28 @@ function App() {
       const rejected = (r.decisions || []).filter((d) => d.outcome === "rejected").length;
       if (r.status === "market_closed") toast.info("Market closed — forced demo cycle ran");
       toast.success(`Cycle ${r.cycle_id}: ${approved} approved · ${rejected} rejected · ${r.exits?.length || 0} exits`);
+
+      if (r.decisions && r.decisions.length > 0) {
+        setLocalDecisions((prev) => {
+          const map = new Map();
+          r.decisions.forEach((d) => {
+            const key = d.id || `${d.cycle_id}-${d.underlying}-${d.created_at}`;
+            map.set(key, d);
+          });
+          prev.forEach((d) => {
+            const key = d.id || `${d.cycle_id}-${d.underlying}-${d.created_at}`;
+            if (!map.has(key)) map.set(key, d);
+          });
+          const updated = Array.from(map.values()).slice(0, 100);
+          try {
+            localStorage.setItem("petra_decisions_v2", JSON.stringify(updated));
+          } catch (e) {
+            console.warn("Storage write failed", e);
+          }
+          return updated;
+        });
+      }
+
       refetchAll();
     },
     onError: () => toast.error("Cycle failed"),
@@ -101,7 +148,7 @@ function App() {
     toast.success("Risk parameters applied");
   };
 
-  const gateDecisions = (decisions || []).filter((d) => d.gate_checks?.length > 0);
+  const gateDecisions = (mergedDecisions || []).filter((d) => d.gate_checks?.length > 0);
 
   return (
     <div data-testid="trading-terminal-root" className="min-h-screen grain">
@@ -125,7 +172,7 @@ function App() {
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
           <div className="xl:col-span-8 flex flex-col gap-5 min-w-0">
             <EquityChart pnl={pnl} initialEquity={account?.initial_equity || 100000} />
-            <PositionsTable positions={positions} onClose={(id) => closeMut.mutate(id)}
+            <PositionsTable positions={positions} trades={trades} onClose={(id) => closeMut.mutate(id)}
               onPayoff={(p) => setPayoff(p)} closingId={closingId} />
           </div>
           <div className="xl:col-span-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-5">
@@ -137,9 +184,10 @@ function App() {
         </div>
 
         <div className="term-card overflow-hidden">
-          <Tabs defaultValue="decisions" className="w-full">
-            <TabsList className="w-full justify-start bg-[#0c111a] border-b border-[var(--border)] rounded-none px-3 h-auto py-0 relative z-10">
+          <Tabs defaultValue="trading" className="w-full">
+            <TabsList className="w-full justify-start bg-[#0c111a] border-b border-[var(--border)] rounded-none px-3 h-auto py-0 relative z-10 flex-wrap">
               {[
+                { v: "trading", i: LayoutGrid, l: "Trading Desk" },
                 { v: "decisions", i: ScrollText, l: "Decision Log" },
                 { v: "gate", i: ShieldCheck, l: "Risk Gate Audit" },
                 { v: "history", i: History, l: "Trade History" },
@@ -151,6 +199,9 @@ function App() {
                 </TabsTrigger>
               ))}
             </TabsList>
+            <TabsContent value="trading" className="p-3 mt-0">
+              <TradingPlatform account={account} onOrderExecuted={refetchAll} />
+            </TabsContent>
             <TabsContent value="decisions" className="p-3 mt-0">
               <AgentReasoningPanel decisions={decisions} showGate height="480px" title="Full Reasoning + Gate Audit Trail" onTradeOpportunity={handleOpenManualTrade} />
             </TabsContent>

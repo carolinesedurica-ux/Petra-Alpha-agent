@@ -5,6 +5,7 @@
 Strict JSON output, fail-closed safety.
 """
 import os
+import asyncio
 import json
 import re
 import logging

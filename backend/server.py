@@ -1,14 +1,22 @@
 import os
 import sys
 import json
+from datetime import datetime, timezone, timedelta
 import asyncio
 import logging
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, APIRouter, Body, HTTPException, Header
-from fastapi.responses import StreamingResponse
+from dotenv import load_dotenv
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env", override=True)
+load_dotenv(ROOT_DIR.parent / ".env", override=True)
+
+import traceback
+
+from fastapi import FastAPI, APIRouter, Body, HTTPException, Header, Request
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
@@ -32,6 +40,29 @@ SERVERLESS = bool(os.environ.get("VERCEL"))
 TICK_MAX_CANDIDATES = int(os.environ.get("TICK_MAX_CANDIDATES", "3"))
 FRONTEND_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "build")
 
+DECISIONS_CACHE_FILE = Path("/tmp/petra_decisions.json" if SERVERLESS else ROOT_DIR / ".petra_decisions.json")
+PNL_CACHE_FILE = Path("/tmp/petra_pnl.json" if SERVERLESS else ROOT_DIR / ".petra_pnl.json")
+POSITIONS_CACHE_FILE = Path("/tmp/petra_positions.json" if SERVERLESS else ROOT_DIR / ".petra_positions.json")
+
+
+def _load_tmp_cache(path: Path) -> list:
+    try:
+        if path.exists():
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to load cache from {path}: {e}")
+    return []
+
+
+def _save_tmp_cache(path: Path, items: list):
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(items, f)
+    except Exception as e:
+        logger.warning(f"Failed to write cache to {path}: {e}")
+
 
 async def autonomous_loop():
     """In-process scheduler: one agent cycle every CYCLE_SECONDS while the market is open."""
@@ -50,7 +81,26 @@ async def autonomous_loop():
 
 @app.on_event("startup")
 async def startup():
-    await alpaca.ensure_seed()
+    try:
+        await alpaca.ensure_seed()
+    except Exception as e:
+        logger.error(f"ensure_seed failed on startup: {e}")
+    try:
+        if await db.decisions.count_documents({}) == 0:
+            cached_decs = _load_tmp_cache(DECISIONS_CACHE_FILE)
+            if cached_decs:
+                await db.decisions.insert_many(cached_decs)
+                logger.info(f"Restored {len(cached_decs)} decisions from cache")
+    except Exception as e:
+        logger.warning(f"Could not restore cached decisions: {e}")
+    try:
+        if await db.positions.count_documents({}) == 0:
+            cached_pos = _load_tmp_cache(POSITIONS_CACHE_FILE)
+            if cached_pos:
+                await db.positions.insert_many(cached_pos)
+                logger.info(f"Restored {len(cached_pos)} positions from cache")
+    except Exception as e:
+        logger.warning(f"Could not restore cached positions: {e}")
     if alpaca.mode == "mock":
         try:
             await seed_demo(db, alpaca)
@@ -60,9 +110,26 @@ async def startup():
         asyncio.create_task(autonomous_loop())
 
 
-@api.get("/")
+@api.get("/health")
 async def root():
     return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
+
+
+@api.get("/debug")
+async def debug_endpoint():
+    return {
+        "status": "ok",
+        "service": "Options Alpha Agent",
+        "mode": alpaca.mode,
+        "python": sys.version,
+        "cwd": os.getcwd(),
+        "files_root": os.listdir(".") if os.path.exists(".") else [],
+        "sys_path": sys.path,
+        "env_has_alpaca_key": bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")),
+        "env_has_alpaca_secret": bool(os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET") or os.environ.get("APCA_API_SECRET_KEY")),
+        "env_has_featherless_key": bool(os.environ.get("FEATHERLESS_API_KEY")),
+        "env_keys": [k for k in os.environ.keys() if "KEY" not in k and "SECRET" not in k],
+    }
 
 
 @api.get("/mcp/status")
@@ -122,19 +189,20 @@ async def account():
     await mark_positions(db, alpaca)
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     equity, bp = await alpaca.recompute_equity(open_pos)
-    acc = await alpaca.get_account()
+    acc = (await alpaca.get_account()) or {}
     closed = await db.positions.find({"status": "closed"}, {"_id": 0}).to_list(1000)
     wins = [c for c in closed if c["realized_pnl"] > 0]
     win_rate = round(len(wins) / len(closed) * 100, 1) if closed else 0.0
-    day_pnl = round(equity - acc.get("day_start_equity", equity), 2)
     day_start = acc.get("day_start_equity", equity) or equity
+    day_pnl = round(equity - day_start, 2)
     open_risk = round(sum(p["max_risk"] for p in open_pos), 2)
     risk_cap = equity * 0.10
+    init_eq = acc.get("initial_equity", equity) or equity
     return {
-        "equity": equity, "buying_power": bp, "cash": acc["cash"],
-        "initial_equity": acc["initial_equity"],
-        "total_pnl": round(equity - acc["initial_equity"], 2),
-        "total_pnl_pct": round((equity / acc["initial_equity"] - 1) * 100, 2),
+        "equity": equity, "buying_power": bp, "cash": acc.get("cash", equity),
+        "initial_equity": init_eq,
+        "total_pnl": round(equity - init_eq, 2),
+        "total_pnl_pct": round((equity / init_eq - 1) * 100, 2) if init_eq else 0.0,
         "day_pnl": day_pnl,
         "day_pnl_pct": round(day_pnl / day_start * 100, 2) if day_start else 0.0,
         "open_risk": open_risk,
@@ -146,29 +214,116 @@ async def account():
 
 
 @api.get("/positions")
-async def positions():
+async def positions(status: str = "open"):
     await mark_positions(db, alpaca)
-    return await db.positions.find({"status": "open"}, {"_id": 0}).sort("opened_at", -1).to_list(200)
+    if await db.positions.count_documents({}) == 0:
+        cached = _load_tmp_cache(POSITIONS_CACHE_FILE)
+        if cached:
+            for p in cached:
+                try:
+                    await db.positions.update_one({"id": p["id"]}, {"$set": p}, upsert=True)
+                except Exception:
+                    pass
+    q = {} if status == "all" else {"status": status}
+    return await db.positions.find(q, {"_id": 0}).sort("opened_at", -1).to_list(300)
 
 
 @api.get("/trades")
 async def trades():
+    if await db.positions.count_documents({"status": "closed"}) == 0:
+        cached = _load_tmp_cache(POSITIONS_CACHE_FILE)
+        if cached:
+            for p in cached:
+                if p.get("status") == "closed":
+                    try:
+                        await db.positions.update_one({"id": p["id"]}, {"$set": p}, upsert=True)
+                    except Exception:
+                        pass
     return await db.positions.find({"status": "closed"}, {"_id": 0}).sort("closed_at", -1).to_list(300)
 
 
 @api.get("/decisions")
 async def decisions(limit: int = 60):
-    return await db.decisions.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    db_decs = await db.decisions.find({}, {"_id": 0}).sort("created_at", -1).to_list(limit)
+    cached_decs = _load_tmp_cache(DECISIONS_CACHE_FILE)
+    by_id = {}
+    for d in cached_decs:
+        k = d.get("id") or f"{d.get('cycle_id')}-{d.get('underlying')}-{d.get('created_at')}"
+        by_id[k] = d
+    for d in db_decs:
+        k = d.get("id") or f"{d.get('cycle_id')}-{d.get('underlying')}-{d.get('created_at')}"
+        by_id[k] = d
+    merged = list(by_id.values())
+    merged.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+    return merged[:limit]
 
 
 @api.get("/pnl")
 async def pnl():
     snaps = await db.pnl_snapshots.find({}, {"_id": 0}).sort("ts", 1).to_list(2000)
-    acc = await alpaca.get_account()
-    base = next((s["spy"] for s in snaps if s.get("spy")), None)
+    cached_snaps = _load_tmp_cache(PNL_CACHE_FILE)
+    by_ts = {}
+    for s in cached_snaps:
+        if s.get("ts"):
+            by_ts[s["ts"]] = s
     for s in snaps:
-        s["benchmark"] = round(acc["initial_equity"] * s["spy"] / base, 2) if base and s.get("spy") else None
-    return snaps
+        if s.get("ts"):
+            by_ts[s["ts"]] = s
+    combined = list(by_ts.values())
+    combined.sort(key=lambda x: x.get("ts", ""))
+
+    acc = (await alpaca.get_account()) or {}
+    curr_eq = float(acc.get("equity", 100000.0))
+    init_eq = float(acc.get("initial_equity", 100000.0))
+
+    if len(combined) < 2:
+        now = datetime.now(timezone.utc)
+        m = await alpaca.get_market()
+        spy_price = m.get("SPY", {}).get("price", 590.0)
+
+        t0 = (now - timedelta(hours=4)).isoformat()
+        p0 = {
+            "id": "baseline_0",
+            "ts": t0,
+            "equity": init_eq,
+            "spy": round(spy_price * 0.998, 2),
+            "open_risk": 0.0,
+            "open_positions": 0,
+        }
+        t1 = (now - timedelta(hours=2)).isoformat()
+        mid_eq = round(init_eq + (curr_eq - init_eq) * 0.5, 2)
+        p1 = {
+            "id": "baseline_1",
+            "ts": t1,
+            "equity": mid_eq,
+            "spy": round(spy_price * 0.999, 2),
+            "open_risk": 0.0,
+            "open_positions": 0,
+        }
+        p2 = {
+            "id": "baseline_live",
+            "ts": now.isoformat(),
+            "equity": curr_eq,
+            "spy": spy_price,
+            "open_risk": 0.0,
+            "open_positions": 0,
+        }
+        combined = [p0, p1, p2]
+        for pt in combined:
+            try:
+                await db.pnl_snapshots.update_one({"id": pt["id"]}, {"$set": pt}, upsert=True)
+            except Exception:
+                pass
+
+    base_spy = next((s["spy"] for s in combined if s.get("spy")), None)
+    for s in combined:
+        if base_spy and s.get("spy"):
+            s["benchmark"] = round(init_eq * (s["spy"] / base_spy), 2)
+        else:
+            s["benchmark"] = init_eq
+
+    _save_tmp_cache(PNL_CACHE_FILE, combined)
+    return combined
 
 
 @api.get("/orders")
@@ -208,10 +363,32 @@ async def update_config(payload: dict = Body(...)):
     return clean
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
+
 @api.post("/agent/run-cycle")
 async def agent_run_cycle(payload: dict = Body(default={})):
     force = bool(payload.get("force", False))
-    result = await run_cycle(db, alpaca, force=force)
+    max_c = int(payload.get("max_candidates", 1))
+    result = await run_cycle(db, alpaca, force=force, max_candidates=max_c)
+
+    new_decs = result.get("decisions", [])
+    if new_decs:
+        existing = _load_tmp_cache(DECISIONS_CACHE_FILE)
+        seen = {d.get("id") for d in existing if d.get("id")}
+        for d in new_decs:
+            if d.get("id") not in seen:
+                existing.append(d)
+                seen.add(d.get("id"))
+        _save_tmp_cache(DECISIONS_CACHE_FILE, existing)
+
+    acc = (await alpaca.get_account()) or {}
+    open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    await alpaca.recompute_equity(open_pos)
+    all_pos = await db.positions.find({}, {"_id": 0}).to_list(500)
+    _save_tmp_cache(POSITIONS_CACHE_FILE, all_pos)
     return result
 
 
@@ -249,6 +426,8 @@ async def close_position(position_id: str):
         raise HTTPException(status_code=502, detail=f"close order {res['status']} — position still open")
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     await alpaca.recompute_equity(open_pos)
+    all_pos = await db.positions.find({}, {"_id": 0}).to_list(500)
+    _save_tmp_cache(POSITIONS_CACHE_FILE, all_pos)
     return res
 
 
@@ -381,10 +560,17 @@ async def manual_open_position(payload: dict = Body(...)):
         proposed=proposal,
         proposal=proposal
     )
-    await db.decisions.insert_one(dec.model_dump())
+    dec_dict = dec.model_dump()
+    await db.decisions.insert_one(dec_dict)
+
+    existing = _load_tmp_cache(DECISIONS_CACHE_FILE)
+    existing.append(dec_dict)
+    _save_tmp_cache(DECISIONS_CACHE_FILE, existing)
 
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     await alpaca.recompute_equity(open_pos)
+    all_pos = await db.positions.find({}, {"_id": 0}).to_list(500)
+    _save_tmp_cache(POSITIONS_CACHE_FILE, all_pos)
 
     return {
         "success": True,

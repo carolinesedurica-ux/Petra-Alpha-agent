@@ -13,10 +13,15 @@ import os
 import asyncio
 import random
 import math
-from datetime import datetime, timezone, timedelta, date
-from zoneinfo import ZoneInfo
-
 import httpx
+from datetime import datetime, timezone, timedelta, date
+
+from pathlib import Path
+from dotenv import load_dotenv
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env", override=True)
+load_dotenv(ROOT_DIR.parent / ".env", override=True)
 
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
@@ -616,20 +621,32 @@ class LiveAlpaca:
         return min(otm, key=lambda l: abs(abs(l["delta"]) - target_delta))
 
     # ---------- orders ----------
-    async def _await_fill(self, order_id, wait_s=15):
-        for _ in range(wait_s // 3):
-            await asyncio.sleep(3)
+    async def _await_fill(self, order_id, wait_s=None):
+        is_open = await self.market_open()
+        if not is_open:
+            # Market closed: options cannot execute outside regular market hours (09:30-16:00 ET).
+            # Avoid sleeping 15s to prevent Vercel 504 gateway timeouts.
             o = await self._req("GET", self.trading, f"/orders/{order_id}")
-            if o["status"] == "filled":
+            if o["status"] in ("filled", "canceled", "rejected", "expired"):
                 return o
-            if o["status"] in ("canceled", "rejected", "expired"):
+            try:
+                await self._req("DELETE", self.trading, f"/orders/{order_id}")
+            except RuntimeError:
+                pass
+            return await self._req("GET", self.trading, f"/orders/{order_id}")
+
+        if wait_s is None:
+            wait_s = 3
+        for _ in range(max(1, wait_s // 2)):
+            await asyncio.sleep(1.5)
+            o = await self._req("GET", self.trading, f"/orders/{order_id}")
+            if o["status"] in ("filled", "canceled", "rejected", "expired"):
                 return o
         try:
             await self._req("DELETE", self.trading, f"/orders/{order_id}")
         except RuntimeError:
             pass
-        o = await self._req("GET", self.trading, f"/orders/{order_id}")
-        return o
+        return await self._req("GET", self.trading, f"/orders/{order_id}")
 
     async def _submit(self, payload, meta):
         try:
