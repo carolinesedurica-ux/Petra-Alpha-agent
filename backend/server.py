@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import traceback
 
 from fastapi import FastAPI, APIRouter, Body, HTTPException, Header, Request
-from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.responses import StreamingResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
@@ -242,10 +242,16 @@ async def update_config(payload: dict = Body(...)):
     return clean
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(status_code=204)
+
+
 @api.post("/agent/run-cycle")
 async def agent_run_cycle(payload: dict = Body(default={})):
     force = bool(payload.get("force", False))
-    result = await run_cycle(db, alpaca, force=force)
+    max_c = int(payload.get("max_candidates", 1))
+    result = await run_cycle(db, alpaca, force=force, max_candidates=max_c)
     return result
 
 

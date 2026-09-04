@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot } from "recharts";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog";
 import { fmtUsd, fmtNum, strategyMeta, legLabel } from "../lib/format";
@@ -17,6 +17,16 @@ function payoffAt(S, legs, credit, contracts) {
 export const SpreadPayoffModal = ({ position, open, onOpenChange }) => {
   const p = position;
   const meta = p ? strategyMeta[p.strategy] || {} : {};
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    if (open) {
+      const timer = setTimeout(() => setMounted(true), 100);
+      return () => clearTimeout(timer);
+    } else {
+      setMounted(false);
+    }
+  }, [open]);
 
   const { data, breakevens, maxProfit, maxLoss } = useMemo(() => {
     if (!p) return { data: [], breakevens: [], maxProfit: 0, maxLoss: 0 };
@@ -63,8 +73,9 @@ export const SpreadPayoffModal = ({ position, open, onOpenChange }) => {
             <div className="font-mono font-bold text-slate-200">{breakevens.map((b) => fmtNum(b, 1)).join(" / ") || "—"}</div></div>
         </div>
 
-        <div className="h-[260px] min-w-0 w-full">
-          <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={260}>
+        <div className="h-[260px] min-w-0 w-full" style={{ width: "100%", height: 260, minHeight: 260, position: "relative" }}>
+          {mounted && (
+            <ResponsiveContainer width="100%" height={260} minWidth={0} minHeight={260}>
             <LineChart data={data} margin={{ top: 8, right: 10, left: 0, bottom: 0 }}>
               <XAxis dataKey="S" tick={{ fill: "#475569", fontSize: 10, fontFamily: "JetBrains Mono" }}
                 axisLine={{ stroke: "rgba(255,255,255,0.06)" }} tickLine={false} minTickGap={40} />
@@ -78,6 +89,7 @@ export const SpreadPayoffModal = ({ position, open, onOpenChange }) => {
               <Line type="monotone" dataKey="pnl" stroke={meta.color} strokeWidth={2.5} dot={false} />
             </LineChart>
           </ResponsiveContainer>
+          )}
         </div>
         <p className="text-[11px] font-mono text-slate-600 mt-1">
           Defined-risk payoff at expiry. TP target ${fmtNum(p.tp_target, 2)} · Stop ${fmtNum(p.stop_target, 2)} · Entry credit ${fmtNum(p.credit, 2)}

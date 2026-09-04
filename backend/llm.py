@@ -5,6 +5,7 @@
 Strict JSON output, fail-closed safety.
 """
 import os
+import asyncio
 import json
 import re
 import logging
@@ -45,7 +46,7 @@ if FEATHERLESS_KEY and AsyncOpenAI:
         featherless_client = AsyncOpenAI(
             base_url=FEATHERLESS_BASE,
             api_key=FEATHERLESS_KEY,
-            timeout=45.0
+            timeout=float(os.environ.get("FEATHERLESS_TIMEOUT", "8.0"))
         )
         logger.info(f"Featherless AI initialized with model: {FEATHERLESS_MODEL}")
     except Exception as e:
@@ -71,14 +72,18 @@ async def _complete_featherless(system: str, prompt: str) -> str:
     if not featherless_client:
         raise RuntimeError("Featherless client not initialized")
     
-    response = await featherless_client.chat.completions.create(
-        model=FEATHERLESS_MODEL,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2,
-        max_tokens=800
+    timeout_s = float(os.environ.get("FEATHERLESS_SIGNAL_TIMEOUT", "4.5"))
+    response = await asyncio.wait_for(
+        featherless_client.chat.completions.create(
+            model=FEATHERLESS_MODEL,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=300
+        ),
+        timeout=timeout_s
     )
     msg = response.choices[0].message
     content = msg.content or ""

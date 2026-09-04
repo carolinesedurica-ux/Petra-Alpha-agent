@@ -1,8 +1,12 @@
-import { useMemo } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from "recharts";
 import { fmtUsd } from "../lib/format";
 
 export const EquityChart = ({ pnl, initialEquity = 100000 }) => {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+  }, []);
   const data = useMemo(
     () =>
       (pnl || []).map((s, i) => ({
@@ -43,8 +47,9 @@ export const EquityChart = ({ pnl, initialEquity = 100000 }) => {
           )}
         </div>
       </div>
-      <div className="flex-1 min-h-[240px] min-w-0 relative w-full">
-        <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={240}>
+      <div className="flex-1 min-h-[240px] min-w-0 relative w-full" style={{ width: "100%", height: 240, minHeight: 240 }}>
+        {mounted && (
+          <ResponsiveContainer width="100%" height={240} minWidth={0} minHeight={240}>
           <AreaChart data={data} margin={{ top: 6, right: 6, left: 0, bottom: 0 }}>
             <defs>
               <linearGradient id="eq" x1="0" y1="0" x2="0" y2="1">
@@ -66,6 +71,7 @@ export const EquityChart = ({ pnl, initialEquity = 100000 }) => {
               fill="none" fillOpacity={0} connectNulls dot={false} activeDot={{ r: 3 }} />
           </AreaChart>
         </ResponsiveContainer>
+        )}
       </div>
     </div>
   );
