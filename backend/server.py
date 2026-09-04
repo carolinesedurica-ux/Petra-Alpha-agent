@@ -43,9 +43,16 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 @app.middleware("http")
 async def vercel_path_rewrite_middleware(request: Request, call_next):
-    real_path = request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri")
-    if real_path and (request.scope.get("path", "").endswith("index.py") or "index.py" in request.scope.get("path", "")):
-        request.scope["path"] = real_path
+    qp = request.query_params.get("__path__")
+    if qp:
+        p = "/" + qp.lstrip("/")
+        if not p.startswith("/api"):
+            p = "/api" + p
+        request.scope["path"] = p
+    else:
+        real_path = request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri")
+        if real_path and (request.scope.get("path", "").endswith("index.py") or "index.py" in request.scope.get("path", "")):
+            request.scope["path"] = real_path
     return await call_next(request)
 
 
@@ -477,7 +484,7 @@ async def chat(payload: dict = Body(...)):
 
 app.include_router(api, prefix="/api")
 app.include_router(api)
-if os.path.isdir(FRONTEND_BUILD):
+if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
 app.add_middleware(
     CORSMiddleware,

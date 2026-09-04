@@ -3,7 +3,7 @@
   "buildCommand": "cd frontend && yarn install --frozen-lockfile && REACT_APP_BACKEND_URL= yarn build",
   "outputDirectory": "frontend/build",
   "functions": {
-    "api/index.py": {
+    "api/**/*.py": {
       "includeFiles": "backend/**",
       "maxDuration": 60
     }
@@ -31,7 +31,7 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index.py"
+      "destination": "/api/index.py?__path__=$1"
     },
     {
       "source": "/((?!api|static|.*\\..*).*)",
