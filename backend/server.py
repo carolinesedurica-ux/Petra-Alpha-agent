@@ -32,33 +32,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("options_alpha")
 
 app = FastAPI(title="Options Alpha Agent")
-
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    tb = traceback.format_exc()
-    logger.error("Unhandled error processing %s %s: %s\n%s", request.method, request.url.path, exc, tb)
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal Server Error", "error": str(exc), "path": request.url.path}
-    )
-@app.middleware("http")
-async def vercel_path_rewrite_middleware(request: Request, call_next):
-    qp = request.query_params.get("__path__")
-    if qp:
-        p = "/" + qp.lstrip("/")
-        if not p.startswith("/api"):
-            p = "/api" + p
-        request.scope["path"] = p
-    else:
-        real_path = request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri")
-        if real_path and (request.scope.get("path", "").endswith("index.py") or "index.py" in request.scope.get("path", "")):
-            request.scope["path"] = real_path
-    return await call_next(request)
-
-
 api = APIRouter()
 alpaca = make_alpaca(db)
+
 CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
 SERVERLESS = bool(os.environ.get("VERCEL"))
 TICK_MAX_CANDIDATES = int(os.environ.get("TICK_MAX_CANDIDATES", "3"))
@@ -455,9 +431,11 @@ async def close_position(position_id: str):
     return res
 
 
+
 @api.post("/opportunities/evaluate")
 async def evaluate_opportunity(payload: dict = Body(...)):
     """Evaluate any underlying symbol on-demand: fetches live chain, runs LLM verdict, strike engine, and 7 risk gates."""
+    await alpaca.ensure_seed()
     symbol = payload.get("symbol", "SPY").upper()
     if symbol not in UNIVERSE:
         raise HTTPException(status_code=400, detail=f"Symbol {symbol} not in universe {list(UNIVERSE.keys())}")
@@ -603,6 +581,65 @@ async def manual_open_position(payload: dict = Body(...)):
     }
 
 
+@api.post("/orders/manual")
+async def manual_order(payload: dict = Body(...)):
+    """Place a simple equity order manually via the Trade Window."""
+    symbol = payload.get("symbol", "").upper().strip()
+    qty = int(payload.get("qty", 0))
+    side = payload.get("side", "buy")          # buy | sell
+    order_type = payload.get("order_type", "market")  # market | limit
+    limit_price = payload.get("limit_price")  # float or None
+
+    if not symbol or qty <= 0 or side not in ("buy", "sell"):
+        raise HTTPException(status_code=422, detail="symbol, qty (>0), and side (buy|sell) are required")
+    if order_type not in ("market", "limit"):
+        raise HTTPException(status_code=422, detail="order_type must be market or limit")
+    if order_type == "limit" and not limit_price:
+        raise HTTPException(status_code=422, detail="limit_price required for limit orders")
+
+    res = await alpaca.place_equity_order(
+        symbol=symbol, qty=qty, side=side,
+        order_type=order_type, limit_price=float(limit_price) if limit_price else None
+    )
+    return res
+
+
+@api.get("/market/live")
+async def market_live():
+    """Enriched live snapshot: bid/ask/volume for all UNIVERSE symbols (Trade Window ticker)."""
+    symbols = list(UNIVERSE.keys())
+    quotes = {}
+    for sym in symbols:
+        try:
+            quotes[sym] = await alpaca.get_quote(sym)
+        except Exception as e:  # noqa
+            logger.warning(f"quote failed {sym}: {e}")
+    m = await alpaca.get_market()
+    result = []
+    for sym in symbols:
+        q = quotes.get(sym, {})
+        mkt = m.get(sym, {})
+        result.append({
+            "symbol": sym,
+            "last": q.get("last") or mkt.get("price", 0),
+            "bid": q.get("bid", 0),
+            "ask": q.get("ask", 0),
+            "volume": q.get("volume", 0),
+            "iv": q.get("iv") or mkt.get("iv"),
+            "change_pct": q.get("change_pct") or round((mkt.get("price", 0) / mkt.get("day_open", 1) - 1) * 100, 2),
+            "trend": mkt.get("trend", 0),
+        })
+    return {"symbols": result, "market": market_status()}
+
+
+@api.get("/market/bars/{symbol}")
+async def market_bars(symbol: str, limit: int = 30):
+    """Return OHLCV bars for sparkline chart in Trade Window."""
+    bars = await alpaca.get_bars(symbol.upper(), limit=min(limit, 60))
+    return {"symbol": symbol.upper(), "bars": bars}
+
+
+
 @api.post("/chat")
 async def chat(payload: dict = Body(...)):
     question = payload.get("message", "")
@@ -632,44 +669,6 @@ async def chat(payload: dict = Body(...)):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-app.include_router(api, prefix="/api")
-app.include_router(api)
-INDEX_HTML = os.path.join(FRONTEND_BUILD, "index.html")
-STATIC_DIR = os.path.join(FRONTEND_BUILD, "static")
-
-if os.path.isdir(STATIC_DIR):
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
-@app.get("/")
-@app.get("/index.html")
-async def serve_index():
-    if os.path.isfile(INDEX_HTML):
-        with open(INDEX_HTML, "r", encoding="utf-8") as f:
-            return Response(content=f.read(), media_type="text/html")
-    return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
-
-@app.get("/favicon.ico")
-async def serve_favicon_ico():
-    fav = os.path.join(FRONTEND_BUILD, "favicon.ico")
-    if os.path.isfile(fav):
-        with open(fav, "rb") as f:
-            return Response(content=f.read(), media_type="image/x-icon")
-    return Response(status_code=204)
-
-@app.get("/favicon.svg")
-async def serve_favicon_svg():
-    fav = os.path.join(FRONTEND_BUILD, "favicon.svg")
-    if os.path.isfile(fav):
-        with open(fav, "rb") as f:
-            return Response(content=f.read(), media_type="image/svg+xml")
-    return Response(status_code=204)
-
-@app.get("/{full_path:path}")
-async def serve_spa_fallback(full_path: str):
-    if not full_path.startswith("api") and os.path.isfile(INDEX_HTML):
-        with open(INDEX_HTML, "r", encoding="utf-8") as f:
-            return Response(content=f.read(), media_type="text/html")
-    raise HTTPException(status_code=404, detail="Not Found")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
@@ -679,7 +678,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(api, prefix="/api")
+app.include_router(api)
+
+if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
+    app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
+
 
 @app.on_event("shutdown")
 async def shutdown():
     pass
+

@@ -26,30 +26,8 @@ load_dotenv(ROOT_DIR.parent / ".env", override=True)
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
 
-
-def get_alpaca_mode():
-    explicit = os.environ.get("ALPACA_MODE")
-    if explicit:
-        return explicit.strip().lower()
-    has_key = bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID"))
-    has_secret = bool(
-        os.environ.get("ALPACA_API_SECRET")
-        or os.environ.get("ALPACA_SECRET_KEY")
-        or os.environ.get("APCA_API_SECRET_KEY")
-    )
-    if has_key and has_secret:
-        return "live"
-    return "mock"
-
-
-MODE = get_alpaca_mode()
-
-try:
-    from zoneinfo import ZoneInfo
-    ET = ZoneInfo("America/New_York")
-except Exception:
-    from datetime import timezone, timedelta
-    ET = timezone(timedelta(hours=-4))
+MODE = os.environ.get("ALPACA_MODE", "live" if (os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")) else "mock").lower()
+ET = ZoneInfo("America/New_York")
 
 # Liquid, tight-spread underlyings. (base price, annualized IV, strike spacing) — mock defaults
 UNIVERSE = {
@@ -172,11 +150,23 @@ class MockAlpaca:
         if not acc:
             await self.ensure_seed()
             acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
-        return acc
+        return acc or {
+            "id": "account", "mode": "mock", "account_number": "PA-ALPHA-PAPER-100K",
+            "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
+            "initial_equity": INITIAL_EQUITY, "day_start_equity": INITIAL_EQUITY,
+            "updated_at": now_iso(),
+        }
 
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
-        return m["symbols"]
+        if not m or "symbols" not in m:
+            await self.ensure_seed()
+            m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        if m and "symbols" in m:
+            return m["symbols"]
+        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
+                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
+                for s, cfg in UNIVERSE.items()}
 
     async def advance_market(self):
         """Random-walk each underlying one step, influenced by its trend."""
@@ -267,37 +257,90 @@ class MockAlpaca:
                                   "reason": reason, "position_id": position["id"], "mode": "mock"}, _close_payload(position, urgent), res)
         return res
 
+    async def place_equity_order(self, symbol, qty, side, order_type="market", limit_price=None):
+        """Simulate a simple equity or single-leg order fill."""
+        m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        sym_data = (m or {"symbols": {}}).get("symbols", {}).get(symbol, {})
+        fill_px = round(sym_data.get("price", 100.0) * random.uniform(0.998, 1.002), 2)
+        if order_type == "limit" and limit_price:
+            fill_px = float(limit_price)
+        notional = round(fill_px * qty, 2)
+        cash_delta = -notional if side == "buy" else notional
+        await self.apply_equity_delta(cash_delta)
+        order_id = f"mock-eq-{new_id()[:8]}"
+        payload = {"symbol": symbol, "qty": qty, "side": side, "type": order_type,
+                   "time_in_force": "day", "legs": []}
+        if limit_price:
+            payload["limit_price"] = limit_price
+        res = {"order_id": order_id, "status": "filled", "filled_price": fill_px,
+               "notional": notional, "alpaca_status": "filled"}
+        await log_order(self.db, {"intent": side, "underlying": symbol, "strategy": "equity",
+                                  "mode": "mock"}, payload, res)
+        return res
+
+    async def get_quote(self, symbol):
+        """Return a simulated bid/ask/volume quote for a symbol."""
+        m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        sym_data = (m or {"symbols": {}}).get("symbols", {}).get(symbol, {})
+        price = sym_data.get("price", UNIVERSE.get(symbol, {"px": 100.0})["px"])
+        iv = sym_data.get("iv", 0.20)
+        spread = max(0.01, price * 0.0015)
+        return {
+            "symbol": symbol,
+            "bid": round(price - spread, 2),
+            "ask": round(price + spread, 2),
+            "last": round(price, 2),
+            "volume": random.randint(500_000, 5_000_000),
+            "iv": round(iv, 4),
+            "change_pct": round((price / sym_data.get("day_open", price) - 1) * 100, 2) if sym_data.get("day_open") else 0.0,
+        }
+
+    async def get_bars(self, symbol, limit=30):
+        """Generate synthetic OHLCV bars for the sparkline chart."""
+        m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
+        price = (m or {"symbols": {}}).get("symbols", {}).get(symbol, {}).get("price",
+                 UNIVERSE.get(symbol, {"px": 100.0})["px"])
+        iv = UNIVERSE.get(symbol, {"iv": 0.20})["iv"]
+        bars = []
+        p = price * random.uniform(0.94, 1.0)
+        now_dt = datetime.now(timezone.utc)
+        for i in range(limit):
+            shock = random.gauss(0, iv / math.sqrt(252 * 6.5))
+            o = round(p, 2)
+            c = round(max(1.0, p * (1 + shock)), 2)
+            h = round(max(o, c) * random.uniform(1.0, 1.003), 2)
+            lo = round(min(o, c) * random.uniform(0.997, 1.0), 2)
+            bars.append({"t": (now_dt - timedelta(hours=limit - i)).isoformat(), "o": o, "h": h, "l": lo, "c": c,
+                         "v": random.randint(50_000, 500_000)})
+            p = c
+        return bars
+
 
 class LiveAlpaca:
     mode = "live"
-
     def __init__(self, db):
         self.db = db
-        self.trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets/v2").rstrip("/")
+        raw_trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets/v2").rstrip("/")
+        if not raw_trading.endswith("/v2"):
+            raw_trading += "/v2"
+        self.trading = raw_trading
         self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
-        api_key = (
-            os.environ.get("ALPACA_API_KEY")
-            or os.environ.get("APCA_API_KEY_ID")
-            or ""
-        )
-        api_secret = (
-            os.environ.get("ALPACA_API_SECRET")
-            or os.environ.get("ALPACA_SECRET_KEY")
-            or os.environ.get("APCA_API_SECRET_KEY")
-            or ""
-        )
-        self.http = httpx.AsyncClient(headers={
-            "APCA-API-KEY-ID": api_key,
-            "APCA-API-SECRET-KEY": api_secret,
-            "Accept": "application/json"}, timeout=20)
+        self.key = os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID", "")
+        self.secret = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY", "")
         self._chains = {}
         self._last_reconcile = None
 
     async def _req(self, method, base, path, **kwargs):
-        r = await self.http.request(method, base + path, **kwargs)
-        if r.is_error:
-            raise RuntimeError(f"Alpaca {method} {path} → {r.status_code}: {r.text[:300]}")
-        return r.json() if r.content else {}
+        headers = {
+            "APCA-API-KEY-ID": self.key,
+            "APCA-API-SECRET-KEY": self.secret,
+            "Accept": "application/json"
+        }
+        async with httpx.AsyncClient(headers=headers, timeout=20.0) as client:
+            r = await client.request(method, base + path, **kwargs)
+            if r.is_error:
+                raise RuntimeError(f"Alpaca {method} {path} → {r.status_code}: {r.text[:300]}")
+            return r.json() if r.content else {}
 
     # ---------- account ----------
     async def _fetch_account(self):
@@ -334,9 +377,16 @@ class LiveAlpaca:
     async def get_account(self):
         acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
         if not acc:
-            await self.ensure_seed()
-            acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
-        return acc
+            try:
+                await self.ensure_seed()
+                acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+            except Exception:
+                pass
+        return acc or {
+            "id": "account", "mode": "live", "account_number": "PAPER-OFFLINE",
+            "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
+            "initial_equity": INITIAL_EQUITY, "day_start_equity": INITIAL_EQUITY, "updated_at": now_iso()
+        }
 
     async def apply_equity_delta(self, cash_delta):
         return None  # Alpaca owns cash accounting in live mode
@@ -406,8 +456,16 @@ class LiveAlpaca:
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
         if not m or (datetime.now(timezone.utc) - datetime.fromisoformat(m["updated_at"])).total_seconds() > 45:
-            return await self.advance_market()
-        return m["symbols"]
+            try:
+                return await self.advance_market()
+            except Exception as e:  # noqa
+                pass
+        if m and "symbols" in m:
+            return m["symbols"]
+        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
+                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
+                for s, cfg in UNIVERSE.items()}
+
 
     async def advance_market(self):
         """Refresh IEX snapshots for the universe; IV/spacing persist from the last chain load."""
@@ -522,14 +580,39 @@ class LiveAlpaca:
                 "strikes": len(strikes)}
 
     def expiry_ts(self, underlying, dte):
-        return self._chains[underlying]["expiry_ts"]
+        if underlying in self._chains and "expiry_ts" in self._chains[underlying]:
+            return self._chains[underlying]["expiry_ts"]
+        return (datetime.now(timezone.utc) + timedelta(days=dte)).isoformat()
 
     def build_chain_leg(self, underlying, S, iv, opt_type, strike, T):
-        legs = self._chains[underlying][opt_type]
-        k = min(legs, key=lambda x: abs(x - strike))
-        return legs[k]
+        if underlying in self._chains and opt_type in self._chains[underlying] and self._chains[underlying][opt_type]:
+            legs = self._chains[underlying][opt_type]
+            k = min(legs, key=lambda x: abs(x - strike))
+            return legs[k]
+        is_call = opt_type == "call"
+        mid = bs_price(S, strike, T, iv, is_call)
+        delta = bs_delta(S, strike, T, iv, is_call)
+        spread = max(0.02, mid * 0.06)
+        bid = max(0.01, mid - spread / 2)
+        ask = mid + spread / 2
+        oi = int(max(50, 5000 * math.exp(-abs(delta) * 3) + random.randint(-200, 800)))
+        return {"strike": strike, "mid": round(mid, 2), "bid": round(bid, 2), "ask": round(ask, 2),
+                "delta": round(delta, 4), "bid_ask_pct": round(spread / mid, 4) if mid > 0 else 1.0,
+                "open_interest": oi, "symbol": None}
 
     def find_strike_by_delta(self, underlying, S, iv, spacing, opt_type, target_delta, T):
+        if underlying not in self._chains or opt_type not in self._chains[underlying] or not self._chains[underlying][opt_type]:
+            step = spacing if spacing > 0 else 1.0
+            direction = 1 if opt_type == "call" else -1
+            best_leg, min_diff = None, 999.0
+            for i in range(1, 20):
+                k = round((round(S / step) + i * direction) * step, 2)
+                leg = self.build_chain_leg(underlying, S, iv, opt_type, k, T)
+                diff = abs(abs(leg["delta"]) - target_delta)
+                if diff < min_diff:
+                    min_diff, best_leg = diff, leg
+            return best_leg
+
         legs = self._chains[underlying][opt_type]
         otm = [l for k, l in legs.items() if (k > S if opt_type == "call" else k < S)
                and l["delta"] is not None and l["mid"] > 0]
@@ -593,7 +676,54 @@ class LiveAlpaca:
         res["filled_debit"] = res.pop("filled_price")
         return res
 
+    async def place_equity_order(self, symbol, qty, side, order_type="market", limit_price=None):
+        """Place a simple equity order through Alpaca paper/live trading."""
+        payload = {"symbol": symbol, "qty": str(qty), "side": side, "type": order_type,
+                   "time_in_force": "day"}
+        if order_type == "limit" and limit_price:
+            payload["limit_price"] = str(limit_price)
+        res = await self._submit(payload, {"intent": side, "underlying": symbol,
+                                            "strategy": "equity", "mode": "live"})
+        return res
+
+    async def get_quote(self, symbol):
+        """Fetch live bid/ask/last/volume for a symbol from Alpaca IEX feed."""
+        try:
+            snap = await self._req("GET", self.data, "/v2/stocks/snapshots",
+                                   params={"symbols": symbol, "feed": "iex"})
+            s = snap.get(symbol, {})
+            trade = s.get("latestTrade") or {}
+            quote = s.get("latestQuote") or {}
+            daily = s.get("dailyBar") or {}
+            prev_daily = s.get("prevDailyBar") or {}
+            last = float(trade.get("p") or daily.get("c") or 0)
+            prev_close = float(prev_daily.get("c") or last or 1)
+            return {
+                "symbol": symbol,
+                "bid": float(quote.get("bp") or 0),
+                "ask": float(quote.get("ap") or 0),
+                "last": round(last, 2),
+                "volume": int(daily.get("v") or 0),
+                "change_pct": round((last / prev_close - 1) * 100, 2) if prev_close else 0.0,
+                "iv": None,
+            }
+        except Exception:
+            return {"symbol": symbol, "bid": 0, "ask": 0, "last": 0, "volume": 0, "change_pct": 0.0, "iv": None}
+
+    async def get_bars(self, symbol, limit=30):
+        """Fetch recent 1-hour OHLCV bars for sparkline chart."""
+        try:
+            data = await self._req("GET", self.data, f"/v2/stocks/{symbol}/bars",
+                                   params={"timeframe": "1Hour", "limit": limit, "feed": "iex", "sort": "asc"})
+            bars = data.get("bars") or []
+            return [{"t": b["t"], "o": b["o"], "h": b["h"], "l": b["l"], "c": b["c"], "v": b["v"]} for b in bars]
+        except Exception:
+            return []
+
 
 def make_alpaca(db):
-    mode = get_alpaca_mode()
-    return LiveAlpaca(db) if mode == "live" else MockAlpaca(db)
+    mode = os.environ.get("ALPACA_MODE", "").lower()
+    has_keys = bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID"))
+    if mode == "live" or (mode != "mock" and has_keys):
+        return LiveAlpaca(db)
+    return MockAlpaca(db)

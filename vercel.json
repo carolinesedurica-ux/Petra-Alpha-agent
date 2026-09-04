@@ -4,8 +4,8 @@
   "outputDirectory": "frontend/build",
   "functions": {
     "api/index.py": {
-      "includeFiles": "{backend/**,frontend/build/**}",
-      "maxDuration": 60
+      "maxDuration": 300,
+      "memory": 1024
     }
   },
   "headers": [
@@ -29,13 +29,7 @@
     }
   ],
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/index.py?__path__=$1"
-    },
-    {
-      "source": "/((?!api|static|.*\\..*).*)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/(.*)", "destination": "/api/index.py" },
+    { "source": "/(.*)",     "destination": "/index.html" }
   ]
 }
