@@ -4,7 +4,7 @@ version = "1.0.0"
 requires-python = ">=3.11"
 
 [tool.vercel]
-entrypoint = "backend.server:app"
+entrypoint = "api.index:app"
 
 [tool.vercel.fastapi.static]
 cdn = true

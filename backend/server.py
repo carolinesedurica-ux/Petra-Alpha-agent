@@ -7,8 +7,10 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from fastapi import FastAPI, APIRouter, Body, HTTPException, Header
-from fastapi.responses import StreamingResponse
+import traceback
+
+from fastapi import FastAPI, APIRouter, Body, HTTPException, Header, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 
@@ -24,6 +26,16 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("options_alpha")
 
 app = FastAPI(title="Options Alpha Agent")
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    tb = traceback.format_exc()
+    logger.error("Unhandled error processing %s %s: %s\n%s", request.method, request.url.path, exc, tb)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "error": str(exc), "path": request.url.path}
+    )
 api = APIRouter(prefix="/api")
 alpaca = make_alpaca(db)
 CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
