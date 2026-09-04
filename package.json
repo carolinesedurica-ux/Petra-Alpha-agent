@@ -2,8 +2,9 @@
   "name": "petra-alpha-agent",
   "version": "1.0.0",
   "private": true,
+  "packageManager": "yarn@1.22.22",
   "scripts": {
-    "build": "cd frontend && npm install && npm run build",
-    "start": "cd frontend && npm start"
+    "build": "cd frontend && yarn install --frozen-lockfile && yarn build",
+    "start": "cd frontend && yarn start"
   }
 }
