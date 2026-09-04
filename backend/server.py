@@ -41,7 +41,15 @@ async def global_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content={"detail": "Internal Server Error", "error": str(exc), "path": request.url.path}
     )
-api = APIRouter(prefix="/api")
+@app.middleware("http")
+async def vercel_path_rewrite_middleware(request: Request, call_next):
+    real_path = request.headers.get("x-matched-path") or request.headers.get("x-forwarded-uri")
+    if real_path and (request.scope.get("path", "").endswith("index.py") or "index.py" in request.scope.get("path", "")):
+        request.scope["path"] = real_path
+    return await call_next(request)
+
+
+api = APIRouter()
 alpaca = make_alpaca(db)
 CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
 SERVERLESS = bool(os.environ.get("VERCEL"))
@@ -467,6 +475,7 @@ async def chat(payload: dict = Body(...)):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+app.include_router(api, prefix="/api")
 app.include_router(api)
 if os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
