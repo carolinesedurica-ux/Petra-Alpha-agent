@@ -4,6 +4,7 @@
   "outputDirectory": "frontend/build",
   "functions": {
     "api/index.py": {
+      "includeFiles": "backend/**",
       "maxDuration": 60,
       "memory": 1024
     }
