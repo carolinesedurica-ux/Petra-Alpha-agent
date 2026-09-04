@@ -1,10 +1,21 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "buildCommand": "cd frontend && yarn install --frozen-lockfile && REACT_APP_BACKEND_URL= yarn build",
+  "outputDirectory": "frontend/build",
   "functions": {
-    "backend/server.py": {
-      "maxDuration": 60,
-      "memory": 1024
+    "api/index.py": {
+      "includeFiles": "backend/**",
+      "maxDuration": 60
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.py"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }

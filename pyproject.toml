@@ -17,8 +17,3 @@ dependencies = [
     "tzdata>=2024.1"
 ]
 
-[tool.vercel]
-entrypoint = "backend.server:app"
-
-[tool.vercel.fastapi.static]
-cdn = true
