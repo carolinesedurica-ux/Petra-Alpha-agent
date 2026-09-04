@@ -17,7 +17,7 @@ const VerdictBlock = ({ v }) => {
       <div className="flex items-center gap-2 mb-1.5">
         <Brain size={12} className="text-[#9D4EDD]" />
         <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
-          Claude Signal {v.source === "fallback" && <span className="text-[#FFB800]">· FALLBACK</span>}
+          {v.source?.startsWith("featherless") ? "Featherless AI Signal" : v.source === "claude-sonnet-4-6" ? "Claude 4.6 Signal" : "LLM Signal"} {v.source === "fallback" && <span className="text-[#FFB800]">· FALLBACK</span>}
         </span>
       </div>
       <div className="flex flex-wrap gap-1.5 mb-1.5 text-[10px] font-mono">

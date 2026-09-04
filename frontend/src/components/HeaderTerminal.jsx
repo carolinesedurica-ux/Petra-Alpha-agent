@@ -38,7 +38,7 @@ export const HeaderTerminal = ({ account, status, agent, llm, onRunCycle, onPaus
         <div className="hidden lg:flex items-center gap-2 flex-wrap">
           <Badge dot label="ALPACA" value={`PAPER ${account?.mode?.toUpperCase() || "MOCK"}`} color="#FFE600" />
           <Badge dot label="MCP" value="ONLINE" color="#A855F7" />
-          <Badge dot label="LLM" value={llm?.provider === "Featherless AI" ? "FEATHERLESS" : "CLAUDE 4.6"} color="#38BDF8" />
+          <Badge dot label="LLM" value={llm?.provider === "Featherless AI" ? "FEATHERLESS" : "FALLBACK"} color="#38BDF8" />
           <Badge label="ACCT" value={account?.account_id || "—"} />
           <Badge dot label="NYSE" value={marketOpen ? "OPEN" : "CLOSED"} color={marketOpen ? "#00F0B5" : "#FF3B69"} />
           <Badge dot label="CRON" value={paused ? "PAUSED" : `${agent?.total_cycles || 0} CYCLES`}

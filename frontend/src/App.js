@@ -167,7 +167,7 @@ function App() {
         </div>
 
         <footer className="text-center text-[10px] font-mono text-slate-700 py-4">
-          PETRA · OPTIONS ALPHA AGENT · LLM SIGNAL ({llm?.provider === "Featherless AI" ? `FEATHERLESS · ${llm.active_model.split("/").pop().toUpperCase()}` : "CLAUDE SONNET 4.6"}) → DETERMINISTIC STRIKE/SIZE ENGINE → HARD RISK GATE → ALPACA MLEG · PAPER {account?.mode?.toUpperCase()}
+          PETRA · OPTIONS ALPHA AGENT · LLM SIGNAL ({llm?.provider === "Featherless AI" ? `FEATHERLESS · ${llm.active_model.split("/").pop().toUpperCase()}` : "DETERMINISTIC / RULE-BASED"}) → DETERMINISTIC STRIKE/SIZE ENGINE → HARD RISK GATE → ALPACA MLEG · PAPER {account?.mode?.toUpperCase()}
         </footer>
       </main>
 
