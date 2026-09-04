@@ -315,8 +315,11 @@ class LiveAlpaca:
     mode = "live"
     def __init__(self, db):
         self.db = db
-        self.trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets")
-        self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets")
+        raw_trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets/v2").rstrip("/")
+        if not raw_trading.endswith("/v2"):
+            raw_trading += "/v2"
+        self.trading = raw_trading
+        self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
         key = os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID", "")
         secret = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY", "")
         self.http = httpx.AsyncClient(headers={
