@@ -147,7 +147,7 @@ function App() {
         <div className="grid grid-cols-1 xl:grid-cols-12 gap-5">
           <div className="xl:col-span-8 flex flex-col gap-5 min-w-0">
             <EquityChart pnl={pnl} initialEquity={account?.initial_equity || 100000} />
-            <PositionsTable positions={positions} onClose={(id) => closeMut.mutate(id)}
+            <PositionsTable positions={positions} trades={trades} onClose={(id) => closeMut.mutate(id)}
               onPayoff={(p) => setPayoff(p)} closingId={closingId} />
           </div>
           <div className="xl:col-span-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-5">

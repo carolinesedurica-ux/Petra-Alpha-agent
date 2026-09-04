@@ -66,6 +66,7 @@ FRONTEND_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__
 
 DECISIONS_CACHE_FILE = Path("/tmp/petra_decisions.json" if SERVERLESS else ROOT_DIR / ".petra_decisions.json")
 PNL_CACHE_FILE = Path("/tmp/petra_pnl.json" if SERVERLESS else ROOT_DIR / ".petra_pnl.json")
+POSITIONS_CACHE_FILE = Path("/tmp/petra_positions.json" if SERVERLESS else ROOT_DIR / ".petra_positions.json")
 
 
 def _load_tmp_cache(path: Path) -> list:
@@ -116,6 +117,14 @@ async def startup():
                 logger.info(f"Restored {len(cached_decs)} decisions from cache")
     except Exception as e:
         logger.warning(f"Could not restore cached decisions: {e}")
+    try:
+        if await db.positions.count_documents({}) == 0:
+            cached_pos = _load_tmp_cache(POSITIONS_CACHE_FILE)
+            if cached_pos:
+                await db.positions.insert_many(cached_pos)
+                logger.info(f"Restored {len(cached_pos)} positions from cache")
+    except Exception as e:
+        logger.warning(f"Could not restore cached positions: {e}")
     if alpaca.mode == "mock":
         try:
             await seed_demo(db, alpaca)
@@ -229,13 +238,31 @@ async def account():
 
 
 @api.get("/positions")
-async def positions():
+async def positions(status: str = "open"):
     await mark_positions(db, alpaca)
-    return await db.positions.find({"status": "open"}, {"_id": 0}).sort("opened_at", -1).to_list(200)
+    if await db.positions.count_documents({}) == 0:
+        cached = _load_tmp_cache(POSITIONS_CACHE_FILE)
+        if cached:
+            for p in cached:
+                try:
+                    await db.positions.update_one({"id": p["id"]}, {"$set": p}, upsert=True)
+                except Exception:
+                    pass
+    q = {} if status == "all" else {"status": status}
+    return await db.positions.find(q, {"_id": 0}).sort("opened_at", -1).to_list(300)
 
 
 @api.get("/trades")
 async def trades():
+    if await db.positions.count_documents({"status": "closed"}) == 0:
+        cached = _load_tmp_cache(POSITIONS_CACHE_FILE)
+        if cached:
+            for p in cached:
+                if p.get("status") == "closed":
+                    try:
+                        await db.positions.update_one({"id": p["id"]}, {"$set": p}, upsert=True)
+                    except Exception:
+                        pass
     return await db.positions.find({"status": "closed"}, {"_id": 0}).sort("closed_at", -1).to_list(300)
 
 
@@ -384,6 +411,8 @@ async def agent_run_cycle(payload: dict = Body(default={})):
     acc = (await alpaca.get_account()) or {}
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     await alpaca.recompute_equity(open_pos)
+    all_pos = await db.positions.find({}, {"_id": 0}).to_list(500)
+    _save_tmp_cache(POSITIONS_CACHE_FILE, all_pos)
     return result
 
 
@@ -421,6 +450,8 @@ async def close_position(position_id: str):
         raise HTTPException(status_code=502, detail=f"close order {res['status']} — position still open")
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     await alpaca.recompute_equity(open_pos)
+    all_pos = await db.positions.find({}, {"_id": 0}).to_list(500)
+    _save_tmp_cache(POSITIONS_CACHE_FILE, all_pos)
     return res
 
 
@@ -560,6 +591,8 @@ async def manual_open_position(payload: dict = Body(...)):
 
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     await alpaca.recompute_equity(open_pos)
+    all_pos = await db.positions.find({}, {"_id": 0}).to_list(500)
+    _save_tmp_cache(POSITIONS_CACHE_FILE, all_pos)
 
     return {
         "success": True,
