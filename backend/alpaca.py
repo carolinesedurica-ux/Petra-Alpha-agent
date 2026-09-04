@@ -21,7 +21,7 @@ import httpx
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
 
-MODE = os.environ.get("ALPACA_MODE", "mock")
+MODE = os.environ.get("ALPACA_MODE", "live" if (os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")) else "mock").lower()
 ET = ZoneInfo("America/New_York")
 
 # Liquid, tight-spread underlyings. (base price, annualized IV, strike spacing) — mock defaults
@@ -705,4 +705,8 @@ class LiveAlpaca:
 
 
 def make_alpaca(db):
-    return LiveAlpaca(db) if MODE == "live" else MockAlpaca(db)
+    mode = os.environ.get("ALPACA_MODE", "").lower()
+    has_keys = bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID"))
+    if mode == "live" or (mode != "mock" and has_keys):
+        return LiveAlpaca(db)
+    return MockAlpaca(db)
