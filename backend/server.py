@@ -80,6 +80,23 @@ async def root():
     return {"service": "Options Alpha Agent", "status": "online", "mode": alpaca.mode}
 
 
+@api.get("/debug")
+async def debug_endpoint():
+    return {
+        "status": "ok",
+        "service": "Options Alpha Agent",
+        "mode": alpaca.mode,
+        "python": sys.version,
+        "cwd": os.getcwd(),
+        "files_root": os.listdir(".") if os.path.exists(".") else [],
+        "sys_path": sys.path,
+        "env_has_alpaca_key": bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")),
+        "env_has_alpaca_secret": bool(os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET") or os.environ.get("APCA_API_SECRET_KEY")),
+        "env_has_featherless_key": bool(os.environ.get("FEATHERLESS_API_KEY")),
+        "env_keys": [k for k in os.environ.keys() if "KEY" not in k and "SECRET" not in k],
+    }
+
+
 @api.get("/mcp/status")
 async def mcp_status():
     acc = await alpaca.get_account() or {}
