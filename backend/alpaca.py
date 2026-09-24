@@ -361,10 +361,32 @@ class LiveAlpaca:
 
     async def ensure_seed(self):
         acc = await self.db.account.find_one({"id": "account"})
-        if not acc or acc.get("mode") != "live":
+        raw = await self._req("GET", self.trading, "/account")
+
+        if acc and acc.get("mode") == "live":
+            stored_number = str(acc.get("account_number") or "")
+            connected_number = str(raw.get("account_number") or "")
+            if stored_number and connected_number and stored_number != connected_number:
+                raise RuntimeError(
+                    "Connected Alpaca account does not match the account bound to this database. "
+                    "Use a separate DB_NAME or intentionally reset Petra state before switching accounts."
+                )
+
+        if not acc:
+            if await self.db.positions.count_documents({}) > 0:
+                raise RuntimeError(
+                    "Trading positions exist but the bound account record is missing. "
+                    "Refusing to guess which Alpaca account owns this state."
+                )
+            await self.db.account.insert_one({
+                "id": "account", "mode": "live", "account_number": raw["account_number"],
+                "initial_equity": float(raw["equity"]), "equity": float(raw["equity"]),
+                "cash": float(raw["cash"]), "buying_power": float(raw["options_buying_power"]),
+                "day_start_equity": float(raw["last_equity"]), "updated_at": now_iso()})
+        elif acc.get("mode") != "live":
+            # Intentional transition from mock/demo state to an Alpaca-backed account.
             for c in ("positions", "decisions", "pnl_snapshots", "market", "account"):
                 await self.db[c].delete_many({})
-            raw = await self._req("GET", self.trading, "/account")
             await self.db.account.insert_one({
                 "id": "account", "mode": "live", "account_number": raw["account_number"],
                 "initial_equity": float(raw["equity"]), "equity": float(raw["equity"]),
