@@ -15,6 +15,7 @@ import random
 import math
 import httpx
 from datetime import datetime, timezone, timedelta, date
+from zoneinfo import ZoneInfo
 
 from pathlib import Path
 from dotenv import load_dotenv
@@ -80,7 +81,7 @@ async def log_order(db, meta, payload, result):
     await db.orders.insert_one({
         "id": new_id(), "ts": now_iso(), **meta,
         "order_type": payload.get("type"), "limit_price": payload.get("limit_price"),
-        "qty": int(payload["qty"]), "legs": payload["legs"],
+        "qty": int(payload["qty"]), "legs": payload.get("legs", []),
         "alpaca_order_id": result.get("order_id", ""), "client_order_id": payload.get("client_order_id", ""),
         "status": result.get("alpaca_status", result["status"]),
         "filled_price": result.get("filled_credit", result.get("filled_debit", 0.0)) or 0.0})
@@ -326,7 +327,11 @@ class LiveAlpaca:
         self.trading = raw_trading
         self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
         self.key = os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID", "")
-        self.secret = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY", "")
+        self.secret = (os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET")
+                       or os.environ.get("APCA_API_SECRET_KEY", ""))
+        self.is_paper = "paper-api.alpaca.markets" in self.trading
+        self.live_trading_armed = os.environ.get("ALLOW_LIVE_TRADING", "false").lower() == "true"
+        self.expected_account_number = os.environ.get("ALPACA_EXPECTED_ACCOUNT_NUMBER", "").strip()
         self._chains = {}
         self._last_reconcile = None
 
@@ -649,6 +654,32 @@ class LiveAlpaca:
         return await self._req("GET", self.trading, f"/orders/{order_id}")
 
     async def _submit(self, payload, meta):
+        # Production-money interlock. Paper trading is allowed; funded-account order submission
+        # requires two explicit deployment settings and an account-number match.
+        if not self.is_paper:
+            if not self.live_trading_armed:
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_trading_locked",
+                       "filled_price": 0.0, "error": "ALLOW_LIVE_TRADING is not true"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if not self.expected_account_number:
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_account_not_whitelisted",
+                       "filled_price": 0.0, "error": "ALPACA_EXPECTED_ACCOUNT_NUMBER is required"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            try:
+                raw_acc = await self._req("GET", self.trading, "/account")
+            except Exception as e:
+                res = {"order_id": "", "status": "error", "alpaca_status": "account_check_failed",
+                       "filled_price": 0.0, "error": str(e)[:300]}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if str(raw_acc.get("account_number", "")) != self.expected_account_number:
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_account_mismatch",
+                       "filled_price": 0.0, "error": "Connected Alpaca account does not match whitelist"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+
         try:
             o = await self._req("POST", self.trading, "/orders", json=payload)
         except RuntimeError as e:
