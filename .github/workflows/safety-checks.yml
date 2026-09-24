@@ -1,0 +1,52 @@
+name: Petra safety checks
+
+on:
+  push:
+    branches:
+      - production-hardening-paper
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend compile and strategy tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pytest
+      - name: Compile backend
+        run: python -m compileall -q backend api
+      - name: Run deterministic strategy tests
+        run: pytest backend/tests/test_strategy_demonstration.py -q
+
+  frontend:
+    name: Frontend production build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - name: Install frontend dependencies
+        run: yarn install --frozen-lockfile
+      - name: Build dashboard
+        env:
+          CI: "true"
+          REACT_APP_BACKEND_URL: ""
+        run: yarn build
