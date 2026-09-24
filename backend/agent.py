@@ -50,6 +50,8 @@ async def get_agent_state(db):
 
 
 async def mark_positions(db, alpaca):
+    if alpaca.mode == "live":
+        await alpaca.ensure_seed()
     market = await alpaca.get_market()
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     if open_pos and await alpaca.reconcile(open_pos):
@@ -112,6 +114,8 @@ async def open_slots(db, cfg):
 
 
 async def run_cycle(db, alpaca, force=False, max_candidates=3):
+    if alpaca.mode == "live":
+        await alpaca.ensure_seed()
     cfg = await get_config(db)
     state = await get_agent_state(db)
     cycle_id = new_id()[:8]
