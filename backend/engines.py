@@ -57,9 +57,12 @@ def build_spread(alpaca, underlying, S, iv, spacing, verdict, cfg, equity):
         min_oi = min(min_oi, short["open_interest"], long["open_interest"])
         risk_width = max(risk_width, abs(short["strike"] - long["strike"]))
         for side, leg in (("sell", short), ("buy", long)):
+            if (not leg.get("symbol") or not leg.get("mid") or leg.get("mid", 0) <= 0
+                    or leg.get("delta") is None or int(leg.get("open_interest") or 0) <= 0):
+                return None
             legs.append({"side": side, "option_type": opt_type, "strike": leg["strike"],
-                         "delta": leg["delta"] or 0.0, "price": leg["mid"],
-                         "symbol": leg["symbol"] or occ_symbol(underlying, expiry_ts, opt_type, leg["strike"])})
+                         "delta": leg["delta"], "price": leg["mid"],
+                         "symbol": leg["symbol"]})
 
     credit = round(max(0.01, credit), 2)
     # for an iron condor only one side can be breached, so risk is the wider single side
