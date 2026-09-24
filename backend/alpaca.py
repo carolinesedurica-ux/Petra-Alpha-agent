@@ -21,8 +21,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
-load_dotenv(ROOT_DIR.parent / ".env", override=True)
+load_dotenv(ROOT_DIR / ".env", override=False)
+load_dotenv(ROOT_DIR.parent / ".env", override=False)
 
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
