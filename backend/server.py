@@ -537,6 +537,8 @@ async def evaluate_opportunity(payload: dict = Body(...)):
 @api.post("/positions/open")
 async def manual_open_position(payload: dict = Body(...)):
     """Open a position manually after reviewing agent feedback and risk."""
+    if alpaca.mode == "live":
+        await alpaca.ensure_seed()
     proposal = payload.get("proposal")
     decision_id = payload.get("decision_id")
     override_contracts = payload.get("contracts")
