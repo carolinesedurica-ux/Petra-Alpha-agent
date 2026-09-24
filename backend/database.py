@@ -20,7 +20,8 @@ client = None
 if mongo_url:
     try:
         import pymongo
-        sync_c = pymongo.MongoClient(mongo_url, serverSelectionTimeoutMS=400)
+        timeout_ms = int(os.environ.get("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000"))
+        sync_c = pymongo.MongoClient(mongo_url, serverSelectionTimeoutMS=timeout_ms)
         sync_c.admin.command('ping')
         client = AsyncIOMotorClient(mongo_url)
         logger.info("Connected to MongoDB at %s", mongo_url)
