@@ -331,6 +331,9 @@ class LiveAlpaca:
         self.is_paper = "paper-api.alpaca.markets" in self.trading
         self.live_trading_armed = os.environ.get("ALLOW_LIVE_TRADING", "false").lower() == "true"
         self.expected_account_number = os.environ.get("ALPACA_EXPECTED_ACCOUNT_NUMBER", "").strip()
+        self.options_feed = os.environ.get("ALPACA_OPTIONS_FEED", "indicative").strip().lower()
+        if self.options_feed not in ("indicative", "opra"):
+            raise RuntimeError("ALPACA_OPTIONS_FEED must be 'indicative' or 'opra'")
         self._chains = {}
         self._last_reconcile = None
 
@@ -500,7 +503,7 @@ class LiveAlpaca:
         quotes = {}
         for i in range(0, len(symbols), 100):
             data = await self._req("GET", self.data, "/v1beta1/options/snapshots",
-                                   params={"symbols": ",".join(symbols[i:i + 100]), "feed": "indicative"})
+                                   params={"symbols": ",".join(symbols[i:i + 100]), "feed": self.options_feed})
             quotes.update(data.get("snapshots", {}))
         out = {}
         for p in open_positions:
@@ -545,7 +548,7 @@ class LiveAlpaca:
             "underlying_symbols": underlying, "status": "active", "expiration_date": exp,
             "strike_price_gte": str(round(S * 0.88, 2)), "strike_price_lte": str(round(S * 1.12, 2))})
         snaps = await self._paged(self.data, "/v1beta1/options/snapshots/" + underlying, "snapshots", {
-            "expiration_date": exp, "feed": "indicative",
+            "expiration_date": exp, "feed": self.options_feed,
             "strike_price_gte": str(round(S * 0.88, 2)), "strike_price_lte": str(round(S * 1.12, 2))})
 
         chain = {"put": {}, "call": {}}
@@ -651,9 +654,16 @@ class LiveAlpaca:
         # Production-money interlock. Paper trading is allowed; funded-account order submission
         # requires two explicit deployment settings and an account-number match.
         if not self.is_paper:
-            if not self.live_trading_armed:
+            is_managed_exit = meta.get("intent") == "close"
+            if not is_managed_exit and not self.live_trading_armed:
                 res = {"order_id": "", "status": "error", "alpaca_status": "live_trading_locked",
-                       "filled_price": 0.0, "error": "ALLOW_LIVE_TRADING is not true"}
+                       "filled_price": 0.0, "error": "ALLOW_LIVE_TRADING is not true; new funded entries are locked"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if (not is_managed_exit and payload.get("order_class") == "mleg"
+                    and self.options_feed != "opra"):
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_options_feed_not_opra",
+                       "filled_price": 0.0, "error": "Funded multi-leg entries require ALPACA_OPTIONS_FEED=opra"}
                 await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
                 return res
             if not self.expected_account_number:
