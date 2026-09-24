@@ -22,7 +22,7 @@ import { ManualTradeModal } from "@/components/ManualTradeModal";
 import { MarketTickerStrip } from "@/components/MarketTickerStrip";
 import { TradeWindow } from "@/components/TradeWindow";
 import { BotActivityFeed } from "@/components/BotActivityFeed";
-import { ScrollText, ShieldCheck, History, Receipt } from "lucide-react";
+import { ScrollText, ShieldCheck, History, Receipt, LayoutGrid } from "lucide-react";
 
 const useLive = (key, fn, interval = 8000, enabled = true) =>
   useQuery({ queryKey: [key], queryFn: fn, refetchInterval: interval, enabled });
