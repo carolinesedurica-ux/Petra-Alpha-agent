@@ -40,9 +40,19 @@ alpaca = make_alpaca(db)
 # stored only in sessionStorage; it is never compiled into the frontend bundle.
 OPERATOR_TOKEN = os.environ.get("PETRA_OPERATOR_TOKEN", "").strip()
 
-CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+
+CYCLE_SECONDS = _env_int("AGENT_CYCLE_SECONDS", 900)
 SERVERLESS = bool(os.environ.get("VERCEL"))
-TICK_MAX_CANDIDATES = int(os.environ.get("TICK_MAX_CANDIDATES", "3"))
+TICK_MAX_CANDIDATES = _env_int("TICK_MAX_CANDIDATES", 3)
 FRONTEND_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "build")
 
 DECISIONS_CACHE_FILE = Path("/tmp/petra_decisions.json" if SERVERLESS else ROOT_DIR / ".petra_decisions.json")
