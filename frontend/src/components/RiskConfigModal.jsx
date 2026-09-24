@@ -5,6 +5,7 @@ import { ShieldCheck } from "lucide-react";
 
 const FIELDS = [
   { key: "max_risk_pct", label: "Max Risk / Trade", min: 0.5, max: 5, step: 0.25, suffix: "%" },
+  { key: "max_daily_loss_pct", label: "Daily Loss Stop", min: 0.5, max: 5, step: 0.25, suffix: "%" },
   { key: "max_concurrent", label: "Max Concurrent Positions", min: 1, max: 10, step: 1, suffix: "" },
   { key: "min_credit_width", label: "Min Credit-to-Width", min: 0.1, max: 0.5, step: 0.02, suffix: "×", scale: 1 },
   { key: "target_delta", label: "Target Short Delta", min: 0.1, max: 0.4, step: 0.01, suffix: "Δ" },
@@ -14,9 +15,9 @@ const FIELDS = [
 ];
 
 const PRESETS = {
-  conservative: { max_risk_pct: 1, max_concurrent: 3, min_credit_width: 0.18, target_delta: 0.16, dte_min: 3, tp_pct: 0.5, stop_mult: 2, max_bid_ask_pct: 0.12, min_open_interest: 300, aggressiveness: "conservative" },
-  balanced: { max_risk_pct: 2, max_concurrent: 5, min_credit_width: 0.15, target_delta: 0.22, dte_min: 3, tp_pct: 0.5, stop_mult: 2, max_bid_ask_pct: 0.2, min_open_interest: 150, aggressiveness: "balanced" },
-  aggressive: { max_risk_pct: 3, max_concurrent: 8, min_credit_width: 0.12, target_delta: 0.3, dte_min: 2, tp_pct: 0.6, stop_mult: 2.5, max_bid_ask_pct: 0.3, min_open_interest: 50, aggressiveness: "aggressive" },
+  conservative: { max_risk_pct: 1, max_daily_loss_pct: 1, max_concurrent: 3, min_credit_width: 0.18, target_delta: 0.16, dte_min: 3, tp_pct: 0.5, stop_mult: 2, max_bid_ask_pct: 0.12, min_open_interest: 300, aggressiveness: "conservative" },
+  balanced: { max_risk_pct: 2, max_daily_loss_pct: 2, max_concurrent: 5, min_credit_width: 0.15, target_delta: 0.22, dte_min: 3, tp_pct: 0.5, stop_mult: 2, max_bid_ask_pct: 0.2, min_open_interest: 150, aggressiveness: "balanced" },
+  aggressive: { max_risk_pct: 3, max_daily_loss_pct: 3, max_concurrent: 8, min_credit_width: 0.12, target_delta: 0.3, dte_min: 2, tp_pct: 0.6, stop_mult: 2.5, max_bid_ask_pct: 0.3, min_open_interest: 50, aggressiveness: "aggressive" },
 };
 
 export const RiskConfigModal = ({ open, onOpenChange, config, onSave }) => {
