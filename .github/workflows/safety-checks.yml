@@ -72,6 +72,9 @@ jobs:
         env:
           VERCEL: "1"
           ALPACA_MODE: "mock"
+          AGENT_CYCLE_SECONDS: ""
+          TICK_MAX_CANDIDATES: ""
+          MONGO_SERVER_SELECTION_TIMEOUT_MS: ""
         run: |
           python - <<'PY'
           from fastapi.testclient import TestClient
