@@ -10,7 +10,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
 mongo_url = os.environ.get('MONGO_URL', '')
-db_name = os.environ.get('DB_NAME', 'options_alpha')
+db_name = (os.environ.get('DB_NAME') or 'options_alpha').strip()
 alpaca_mode = os.environ.get("ALPACA_MODE", "").lower()
 has_alpaca_keys = bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID"))
 alpaca_backed = alpaca_mode == "live" or (alpaca_mode != "mock" and has_alpaca_keys)
@@ -28,7 +28,7 @@ if mongo_url:
         sync_c = pymongo.MongoClient(mongo_url, serverSelectionTimeoutMS=timeout_ms)
         sync_c.admin.command('ping')
         client = AsyncIOMotorClient(mongo_url)
-        logger.info("Connected to MongoDB at %s", mongo_url)
+        logger.info("Connected to persistent MongoDB")
     except Exception:
         client = None
 
