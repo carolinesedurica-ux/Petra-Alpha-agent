@@ -190,9 +190,10 @@ class MockAlpaca:
     async def recompute_equity(self, open_positions):
         """equity = cash + net liquidation value of open credit spreads."""
         acc = await self.db.account.find_one({"id": "account"})
-        open_val = sum(p["unrealized_pnl"] for p in open_positions)
+        open_liability = sum(float(p.get("current_value", 0.0)) * 100 * int(p.get("contracts", 0))
+                             for p in open_positions)
         risk_used = sum(p["max_risk"] for p in open_positions)
-        equity = round(acc["cash"] + open_val, 2)
+        equity = round(acc["cash"] - open_liability, 2)
         buying_power = round(equity - risk_used, 2)
         await self.db.account.update_one({"id": "account"}, {"$set": {
             "equity": equity, "buying_power": buying_power, "updated_at": now_iso()}})
@@ -250,7 +251,7 @@ class MockAlpaca:
     async def close_mleg(self, position, urgent=False, reason=""):
         debit = position["current_value"]
         realized = round((position["credit"] - debit) * 100 * position["contracts"], 2)
-        await self.apply_equity_delta(realized)
+        await self.apply_equity_delta(-debit * 100 * position["contracts"])
         res = {"order_id": f"mock-{new_id()[:8]}", "status": "filled", "filled_debit": debit}
         await log_order(self.db, {"intent": "close", "underlying": position["underlying"], "strategy": position["strategy"],
                                   "reason": reason, "position_id": position["id"], "mode": "mock"}, _close_payload(position, urgent), res)
