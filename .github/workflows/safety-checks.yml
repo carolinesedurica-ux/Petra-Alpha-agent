@@ -102,7 +102,7 @@ jobs:
       - name: Install worker dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r backend/requirements-worker.txt pytest
+          pip install -r backend/requirements-worker.txt pytest pytest-xdist
       - name: Compile and import worker
         run: |
           python -m compileall -q backend/settings.py backend/store.py backend/worker.py
