@@ -34,6 +34,7 @@ Recommended production environment:
 ALPACA_MODE=live
 ALPACA_TRADING_URL=https://paper-api.alpaca.markets
 ALPACA_DATA_URL=https://data.alpaca.markets
+ALPACA_OPTIONS_FEED=indicative
 ALPACA_API_KEY=<paper key>
 ALPACA_SECRET_KEY=<paper secret>
 
@@ -91,6 +92,7 @@ Funded orders remain blocked until all of these are true:
 
 ```env
 ALPACA_TRADING_URL=https://api.alpaca.markets
+ALPACA_OPTIONS_FEED=opra
 ALLOW_LIVE_TRADING=true
 ALPACA_EXPECTED_ACCOUNT_NUMBER=<exact funded account number>
 ```
@@ -102,7 +104,8 @@ For an initial live period, use materially smaller risk than the hackathon defau
 ## 7. Emergency controls
 
 - **Pause Petra** in the dashboard to prevent new autonomous cycles.
-- Keep `ALLOW_LIVE_TRADING=false` whenever funded trading is not intentionally armed.
+- Set `ALLOW_LIVE_TRADING=false` to lock new funded entries. Petra-managed close orders remain allowed when the whitelisted account is connected.
+- Keep `ALLOW_LIVE_TRADING=false` whenever funded entries are not intentionally armed.
 - If the deployment or credentials may be compromised, revoke/rotate Alpaca API keys and both Petra secrets.
 - Manage/close positions directly in the Alpaca account if Petra is unavailable; reconciliation should detect externally closed positions on the next healthy cycle.
 - Do not rely on the dashboard as the only record of positions or account state.
