@@ -705,6 +705,12 @@ class LiveAlpaca:
                        "filled_price": 0.0, "error": "Connected Alpaca account does not match whitelist"}
                 await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
                 return res
+            if (not is_managed_exit and payload.get("order_class") == "mleg"
+                    and int(raw_acc.get("options_trading_level") or 0) < 3):
+                res = {"order_id": "", "status": "error", "alpaca_status": "options_level_insufficient",
+                       "filled_price": 0.0, "error": "Alpaca Options Level 3 is required for funded spread entries"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
 
         try:
             o = await self._req("POST", self.trading, "/orders", json=payload)
