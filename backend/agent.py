@@ -172,6 +172,14 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
             await db.decisions.insert_one(Decision(cycle_id=cycle_id, underlying=sym, outcome="error",
                                                    reason=f"Chain fetch failed: {e}").model_dump())
             continue
+        if alpaca.mode == "live" and (not chain or not chain.get("iv") or not chain.get("spacing")):
+            dec = Decision(
+                cycle_id=cycle_id, underlying=sym, outcome="skipped",
+                reason="No complete verified Alpaca option chain/IV/spacing available — skip candidate."
+            )
+            await db.decisions.insert_one(dec.model_dump())
+            decisions_out.append(dec.model_dump())
+            continue
         if chain:
             m.update({k: chain[k] for k in ("iv", "spacing") if chain.get(k)})
         live = alpaca.mode == "live"
