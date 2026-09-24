@@ -51,6 +51,8 @@ POSITIONS_CACHE_FILE = Path("/tmp/petra_positions.json" if SERVERLESS else ROOT_
 
 
 def _load_tmp_cache(path: Path) -> list:
+    if alpaca.mode != "mock":
+        return []
     try:
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
@@ -61,6 +63,8 @@ def _load_tmp_cache(path: Path) -> list:
 
 
 def _save_tmp_cache(path: Path, items: list):
+    if alpaca.mode != "mock":
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -636,6 +640,8 @@ async def manual_open_position(payload: dict = Body(...)):
 @api.post("/orders/manual")
 async def manual_order(payload: dict = Body(...)):
     """Place a simple equity order manually via the Trade Window."""
+    if alpaca.mode == "live":
+        await alpaca.ensure_seed()
     if alpaca.mode == "live" and os.environ.get("ENABLE_MANUAL_EQUITY_TRADING", "false").lower() != "true":
         raise HTTPException(status_code=403, detail="Manual equity trading is disabled for Alpaca-backed mode.")
     symbol = payload.get("symbol", "").upper().strip()
