@@ -166,6 +166,13 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
         dec = Decision(cycle_id=cycle_id, underlying=sym, verdict=verdict,
                        strategy=verdict["chosen_strategy"], market_snapshot=snap)
 
+        if verdict.get("source") == "fallback":
+            dec.outcome = "rejected"
+            dec.reason = "Signal providers unavailable or invalid — deterministic fallback is observation-only. Skip trade."
+            await db.decisions.insert_one(dec.model_dump())
+            decisions_out.append(dec.model_dump())
+            continue
+
         if verdict["confidence"] < 0.5:
             dec.outcome = "rejected"
             dec.reason = f"Low LLM confidence {verdict['confidence']:.0%} < 50% floor. Skip trade."
