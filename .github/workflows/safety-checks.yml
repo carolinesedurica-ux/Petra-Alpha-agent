@@ -31,8 +31,8 @@ jobs:
         env:
           ALPACA_MODE: "mock"
         run: python -c "import sys; sys.path.insert(0, 'backend'); import server; print('FastAPI import OK, mode=', server.alpaca.mode)"
-      - name: Run deterministic strategy tests
-        run: pytest backend/tests/test_strategy_demonstration.py -q
+      - name: Run backend safety tests
+        run: pytest backend/tests/test_strategy_demonstration.py backend/tests/test_worker_settings.py -q
 
   frontend:
     name: Frontend production build
@@ -87,3 +87,25 @@ jobs:
               print("auth", auth.status_code, auth.text)
               assert auth.status_code == 200
           PY
+
+
+  worker-safety:
+    name: Paper worker safety
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-worker.txt
+      - name: Install worker dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-worker.txt pytest
+      - name: Compile and import worker
+        run: |
+          python -m compileall -q backend/settings.py backend/store.py backend/worker.py
+          python -c "import sys; sys.path.insert(0, 'backend'); import worker; print('worker import OK')"
+      - name: Verify paper-only fail-closed settings
+        run: pytest backend/tests/test_worker_settings.py -q
