@@ -68,8 +68,19 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-      - name: Import Vercel FastAPI entrypoint
+      - name: Exercise Vercel FastAPI startup and health route
         env:
           VERCEL: "1"
           ALPACA_MODE: "mock"
-        run: python -c "from api.index import app; print('Vercel entrypoint import OK')"
+        run: |
+          python - <<'PY'
+          from fastapi.testclient import TestClient
+          from api.index import app
+          with TestClient(app) as client:
+              response = client.get("/api/health")
+              print("health", response.status_code, response.text)
+              assert response.status_code == 200
+              auth = client.get("/api/auth/status")
+              print("auth", auth.status_code, auth.text)
+              assert auth.status_code == 200
+          PY
