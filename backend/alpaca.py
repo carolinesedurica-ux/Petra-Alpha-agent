@@ -125,9 +125,16 @@ class MockAlpaca:
     # ---------- account & market state ----------
     async def ensure_seed(self):
         acc = await self.db.account.find_one({"id": "account"})
-        if not acc or acc.get("mode") != "mock":
-            for c in ("positions", "decisions", "pnl_snapshots", "market", "account"):
-                await self.db[c].delete_many({})
+        if acc and acc.get("mode") != "mock":
+            raise RuntimeError(
+                "Refusing to overwrite a non-mock Petra database from MockAlpaca. "
+                "Use a separate DB_NAME for demo/mock mode."
+            )
+        if not acc:
+            if await self.db.positions.count_documents({}) > 0:
+                raise RuntimeError(
+                    "Positions exist but the account record is missing. Refusing to seed mock state."
+                )
             await self.db.account.insert_one({
                 "id": "account", "mode": "mock", "account_number": "PA-ALPHA-PAPER-100K",
                 "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
@@ -320,18 +327,18 @@ class LiveAlpaca:
     mode = "live"
     def __init__(self, db):
         self.db = db
-        raw_trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets/v2").rstrip("/")
+        raw_trading = (os.environ.get("ALPACA_TRADING_URL") or "https://paper-api.alpaca.markets/v2").strip().rstrip("/")
         if not raw_trading.endswith("/v2"):
             raw_trading += "/v2"
         self.trading = raw_trading
-        self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
+        self.data = (os.environ.get("ALPACA_DATA_URL") or "https://data.alpaca.markets").strip().rstrip("/")
         self.key = os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID", "")
         self.secret = (os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET")
                        or os.environ.get("APCA_API_SECRET_KEY", ""))
-        self.is_paper = "paper-api.alpaca.markets" in self.trading
+        self.is_paper = self.trading == "https://paper-api.alpaca.markets/v2"
         self.live_trading_armed = os.environ.get("ALLOW_LIVE_TRADING", "false").lower() == "true"
         self.expected_account_number = os.environ.get("ALPACA_EXPECTED_ACCOUNT_NUMBER", "").strip()
-        self.options_feed = os.environ.get("ALPACA_OPTIONS_FEED", "indicative").strip().lower()
+        self.options_feed = (os.environ.get("ALPACA_OPTIONS_FEED") or "indicative").strip().lower()
         if self.options_feed not in ("indicative", "opra"):
             raise RuntimeError("ALPACA_OPTIONS_FEED must be 'indicative' or 'opra'")
         self._chains = {}
@@ -384,14 +391,10 @@ class LiveAlpaca:
                 "cash": float(raw["cash"]), "buying_power": float(raw["options_buying_power"]),
                 "day_start_equity": float(raw["last_equity"]), "updated_at": now_iso()})
         elif acc.get("mode") != "live":
-            # Intentional transition from mock/demo state to an Alpaca-backed account.
-            for c in ("positions", "decisions", "pnl_snapshots", "market", "account"):
-                await self.db[c].delete_many({})
-            await self.db.account.insert_one({
-                "id": "account", "mode": "live", "account_number": raw["account_number"],
-                "initial_equity": float(raw["equity"]), "equity": float(raw["equity"]),
-                "cash": float(raw["cash"]), "buying_power": float(raw["options_buying_power"]),
-                "day_start_equity": float(raw["last_equity"]), "updated_at": now_iso()})
+            raise RuntimeError(
+                "Database is not bound to an Alpaca-backed account. "
+                "Refusing to delete or replace existing Petra history automatically; migrate or use a separate DB_NAME."
+            )
         await self._fetch_account()
         if not await self.db.market.find_one({"id": "market"}):
             await self.advance_market()
@@ -479,16 +482,15 @@ class LiveAlpaca:
     # ---------- market data ----------
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
-        if not m or (datetime.now(timezone.utc) - datetime.fromisoformat(m["updated_at"])).total_seconds() > 45:
+        fresh = False
+        if m and m.get("updated_at"):
             try:
-                return await self.advance_market()
-            except Exception as e:  # noqa
-                pass
-        if m and "symbols" in m:
+                fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(m["updated_at"])).total_seconds() <= 45
+            except Exception:
+                fresh = False
+        if fresh and m.get("symbols"):
             return m["symbols"]
-        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
-                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
-                for s, cfg in UNIVERSE.items()}
+        return await self.advance_market()
 
 
     async def advance_market(self):
@@ -503,13 +505,16 @@ class LiveAlpaca:
             trade = snap.get("latestTrade") or {}
             daily = snap.get("dailyBar") or {}
             prevd = snap.get("prevDailyBar") or {}
-            price = float(trade.get("p") or daily.get("c") or old.get("price") or cfg["px"])
+            raw_price = trade.get("p") or daily.get("c")
+            if not raw_price:
+                raise RuntimeError(f"Missing fresh Alpaca market price for {s}")
+            price = float(raw_price)
             prev_close = float(prevd.get("c") or old.get("prev_price") or price)
             day_open = float(daily.get("o") or old.get("day_open") or price)
             syms[s] = {"price": round(price, 2), "prev_price": round(prev_close, 2),
                        "day_open": round(day_open, 2),
                        "trend": round((price / prev_close - 1) * 100, 2) if prev_close else 0.0,
-                       "iv": old.get("iv", cfg["iv"]), "spacing": old.get("spacing", cfg["spacing"])}
+                       "iv": old.get("iv"), "spacing": old.get("spacing")}
         await self.db.market.update_one({"id": "market"}, {"$set": {"symbols": syms, "updated_at": now_iso()}}, upsert=True)
         return syms
 
@@ -535,7 +540,9 @@ class LiveAlpaca:
                 if mid <= 0 and leg["side"] == "sell":
                     ok = False
                 val += mid if leg["side"] == "sell" else -mid
-            out[p["id"]] = (round(max(0.0, val), 2), _remaining_days(p["expiry_ts"])) if ok else _bs_close_value(p, market)
+            if not ok:
+                raise RuntimeError(f"Missing live option quote needed to mark {p['underlying']} position {p['id']}")
+            out[p["id"]] = (round(max(0.0, val), 2), _remaining_days(p["expiry_ts"]))
         return out
 
     # ---------- options chain ----------
@@ -606,36 +613,18 @@ class LiveAlpaca:
     def expiry_ts(self, underlying, dte):
         if underlying in self._chains and "expiry_ts" in self._chains[underlying]:
             return self._chains[underlying]["expiry_ts"]
-        return (datetime.now(timezone.utc) + timedelta(days=dte)).isoformat()
+        raise RuntimeError(f"No verified Alpaca option chain loaded for {underlying}")
 
     def build_chain_leg(self, underlying, S, iv, opt_type, strike, T):
         if underlying in self._chains and opt_type in self._chains[underlying] and self._chains[underlying][opt_type]:
             legs = self._chains[underlying][opt_type]
             k = min(legs, key=lambda x: abs(x - strike))
             return legs[k]
-        is_call = opt_type == "call"
-        mid = bs_price(S, strike, T, iv, is_call)
-        delta = bs_delta(S, strike, T, iv, is_call)
-        spread = max(0.02, mid * 0.06)
-        bid = max(0.01, mid - spread / 2)
-        ask = mid + spread / 2
-        oi = int(max(50, 5000 * math.exp(-abs(delta) * 3) + random.randint(-200, 800)))
-        return {"strike": strike, "mid": round(mid, 2), "bid": round(bid, 2), "ask": round(ask, 2),
-                "delta": round(delta, 4), "bid_ask_pct": round(spread / mid, 4) if mid > 0 else 1.0,
-                "open_interest": oi, "symbol": None}
+        return None
 
     def find_strike_by_delta(self, underlying, S, iv, spacing, opt_type, target_delta, T):
         if underlying not in self._chains or opt_type not in self._chains[underlying] or not self._chains[underlying][opt_type]:
-            step = spacing if spacing > 0 else 1.0
-            direction = 1 if opt_type == "call" else -1
-            best_leg, min_diff = None, 999.0
-            for i in range(1, 20):
-                k = round((round(S / step) + i * direction) * step, 2)
-                leg = self.build_chain_leg(underlying, S, iv, opt_type, k, T)
-                diff = abs(abs(leg["delta"]) - target_delta)
-                if diff < min_diff:
-                    min_diff, best_leg = diff, leg
-            return best_leg
+            return None
 
         legs = self._chains[underlying][opt_type]
         otm = [l for k, l in legs.items() if (k > S if opt_type == "call" else k < S)
