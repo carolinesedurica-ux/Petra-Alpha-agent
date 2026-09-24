@@ -315,7 +315,7 @@ async def pnl():
     curr_eq = float(acc.get("equity", 100000.0))
     init_eq = float(acc.get("initial_equity", 100000.0))
 
-    if len(combined) < 2:
+    if len(combined) < 2 and alpaca.mode == "mock":
         now = datetime.now(timezone.utc)
         m = await alpaca.get_market()
         spy_price = m.get("SPY", {}).get("price", 590.0)
