@@ -435,8 +435,11 @@ async def agent_run_cycle(payload: dict = Body(default={})):
 @api.api_route("/agent/tick", methods=["GET", "POST"])
 async def agent_tick(authorization: str = Header(default="")):
     """External scheduler hook (Vercel Cron / GitHub Actions). Runs one cycle if the market is open."""
-    secret = os.environ.get("CRON_SECRET")
-    if secret and authorization != f"Bearer {secret}":
+    secret = os.environ.get("CRON_SECRET", "").strip()
+    if not secret:
+        if alpaca.mode != "mock":
+            raise HTTPException(status_code=503, detail="CRON_SECRET is required for Alpaca-backed mode")
+    elif not hmac.compare_digest(authorization, f"Bearer {secret}"):
         raise HTTPException(status_code=401, detail="bad cron secret")
     st = await get_agent_state(db)
     if st.get("paused") or not st.get("autonomous", True):
@@ -730,7 +733,6 @@ app.add_middleware(
 )
 
 app.include_router(api, prefix="/api")
-app.include_router(api)
 
 if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
