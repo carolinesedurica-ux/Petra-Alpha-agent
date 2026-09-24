@@ -20,7 +20,11 @@ client = None
 if mongo_url:
     try:
         import pymongo
-        timeout_ms = int(os.environ.get("MONGO_SERVER_SELECTION_TIMEOUT_MS", "5000"))
+        raw_timeout = (os.environ.get("MONGO_SERVER_SELECTION_TIMEOUT_MS") or "").strip()
+        try:
+            timeout_ms = int(raw_timeout) if raw_timeout else 5000
+        except ValueError:
+            timeout_ms = 5000
         sync_c = pymongo.MongoClient(mongo_url, serverSelectionTimeoutMS=timeout_ms)
         sync_c.admin.command('ping')
         client = AsyncIOMotorClient(mongo_url)
