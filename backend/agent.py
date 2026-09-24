@@ -133,7 +133,24 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
     # 2. evaluate new candidates (LLM-gated), up to open slots, cap LLM calls at 3
     open_pos = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
     held = {p["underlying"] for p in open_pos}
+    equity, _ = await alpaca.recompute_equity(open_pos)
     acc = await alpaca.get_account()
+
+    day_start = float(acc.get("day_start_equity") or equity or 0.0)
+    daily_loss_pct = ((day_start - equity) / day_start * 100.0) if day_start > 0 and equity < day_start else 0.0
+    if daily_loss_pct >= float(cfg.get("max_daily_loss_pct", 2.0)):
+        dec = Decision(
+            cycle_id=cycle_id, underlying="—", outcome="skipped",
+            reason=(f"DAILY LOSS STOP: equity is down {daily_loss_pct:.2f}% from day start; "
+                    f"limit is {cfg.get('max_daily_loss_pct', 2.0):.2f}%. Existing positions remain managed; no new risk.")
+        )
+        await db.decisions.insert_one(dec.model_dump())
+        await record_snapshot(db, equity, open_pos)
+        await _bump_cycle(db, state)
+        return {"cycle_id": cycle_id, "status": "daily_loss_stop", "market": mkt,
+                "exits": exits, "decisions": [dec.model_dump()],
+                "equity": equity, "open_positions": len(open_pos)}
+
     market = await alpaca.get_market()
     candidates = [s for s in UNIVERSE if s not in held]
     random.shuffle(candidates)
