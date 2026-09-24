@@ -165,9 +165,7 @@ class MockAlpaca:
             m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
         if m and "symbols" in m:
             return m["symbols"]
-        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
-                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
-                for s, cfg in UNIVERSE.items()}
+        raise RuntimeError("Live Alpaca market state unavailable; refusing to use synthetic prices.")
 
     async def advance_market(self):
         """Random-walk each underlying one step, influenced by its trend."""
@@ -382,16 +380,11 @@ class LiveAlpaca:
     async def get_account(self):
         acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
         if not acc:
-            try:
-                await self.ensure_seed()
-                acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
-            except Exception:
-                pass
-        return acc or {
-            "id": "account", "mode": "live", "account_number": "PAPER-OFFLINE",
-            "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
-            "initial_equity": INITIAL_EQUITY, "day_start_equity": INITIAL_EQUITY, "updated_at": now_iso()
-        }
+            await self.ensure_seed()
+            acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        if not acc:
+            raise RuntimeError("Alpaca account state unavailable; refusing to use synthetic account values.")
+        return acc
 
     async def apply_equity_delta(self, cash_delta):
         return None  # Alpaca owns cash accounting in live mode
