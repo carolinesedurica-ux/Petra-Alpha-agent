@@ -47,6 +47,9 @@ class Position(BaseModel):
     exit_reason: Optional[str] = None
     realized_pnl: float = 0.0
     paper_sim: bool = False
+    management_status: Literal["managed", "review_required"] = "managed"
+    source: str = "petra"
+    reconciliation_notes: Optional[str] = None
     opened_at: str = Field(default_factory=now_iso)
     closed_at: Optional[str] = None
 
