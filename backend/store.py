@@ -85,6 +85,7 @@ class WorkerStore:
 async def connect_store(mongo_url: str, db_name: str) -> WorkerStore:
     client = AsyncIOMotorClient(
         mongo_url,
+        tz_aware=True,
         serverSelectionTimeoutMS=8000,
         connectTimeoutMS=8000,
         socketTimeoutMS=15000,
@@ -135,7 +136,11 @@ class Lease:
 
     async def assert_owned(self):
         doc = await self.store.db.locks.find_one({"_id": "trading"})
-        if not doc or doc.get("owner") != self.owner or doc.get("expires_at") <= utcnow():
+        expires_at = (doc or {}).get("expires_at")
+        if expires_at is not None and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if (not doc or doc.get("owner") != self.owner or expires_at is None
+                or expires_at <= utcnow()):
             raise LeaseNotAcquired("Trading lease is no longer owned by this worker")
 
     async def __aexit__(self, exc_type, exc, tb):
