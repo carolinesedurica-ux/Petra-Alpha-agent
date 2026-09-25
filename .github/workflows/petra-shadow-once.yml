@@ -39,9 +39,9 @@ jobs:
           ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
           ALPACA_EXPECTED_ACCOUNT_NUMBER: ${{ secrets.ALPACA_EXPECTED_ACCOUNT_NUMBER }}
           MONGO_URL: ${{ secrets.PETRA_WORKER_MONGO_URL }}
-          DB_NAME: ${{ vars.PETRA_DB_NAME }}
+          DB_NAME: petra_paper
           FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
-          ALPACA_OPTIONS_FEED: ${{ vars.ALPACA_OPTIONS_FEED }}
+          ALPACA_OPTIONS_FEED: indicative
           PETRA_ENTRIES_ENABLED: "false"
           PETRA_DRY_RUN: "true"
           TICK_MAX_CANDIDATES: "1"
