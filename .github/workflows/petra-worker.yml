@@ -58,9 +58,11 @@ jobs:
           FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
           ALPACA_OPTIONS_FEED: ${{ vars.ALPACA_OPTIONS_FEED || 'indicative' }}
 
-          PETRA_ENTRIES_ENABLED: ${{ vars.PETRA_ENTRIES_ENABLED }}
-          PETRA_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || vars.PETRA_DRY_RUN }}
-          TICK_MAX_CANDIDATES: ${{ vars.TICK_MAX_CANDIDATES }}
+          # Exits-only operating phase: new entries are code-level locked off here.
+          PETRA_ENTRIES_ENABLED: "false"
+          # Scheduled runs manage existing positions. Manual dispatch defaults to shadow mode.
+          PETRA_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          TICK_MAX_CANDIDATES: "1"
           PETRA_LEASE_TTL_SECONDS: "900"
 
           GITHUB_RUN_ID: ${{ github.run_id }}
