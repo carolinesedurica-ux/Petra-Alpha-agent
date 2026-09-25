@@ -84,7 +84,9 @@ async def log_order(db, meta, payload, result):
         "qty": int(payload["qty"]), "legs": payload.get("legs", []),
         "alpaca_order_id": result.get("order_id", ""), "client_order_id": payload.get("client_order_id", ""),
         "status": result.get("alpaca_status", result["status"]),
-        "filled_price": result.get("filled_credit", result.get("filled_debit", 0.0)) or 0.0})
+        "filled_price": result.get("filled_credit", result.get("filled_debit", result.get("filled_price", 0.0))) or 0.0,
+        "filled_qty": result.get("filled_qty", 0.0) or 0.0,
+        "requested_qty": result.get("requested_qty", payload.get("qty", 0)) or 0.0})
 
 
 def _open_payload(proposal, cycle_id):
