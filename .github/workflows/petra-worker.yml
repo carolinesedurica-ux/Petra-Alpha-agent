@@ -53,10 +53,10 @@ jobs:
           ALPACA_EXPECTED_ACCOUNT_NUMBER: ${{ secrets.ALPACA_EXPECTED_ACCOUNT_NUMBER }}
 
           MONGO_URL: ${{ secrets.PETRA_WORKER_MONGO_URL }}
-          DB_NAME: ${{ vars.PETRA_DB_NAME }}
+          DB_NAME: ${{ vars.PETRA_DB_NAME || 'petra_paper' }}
 
           FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
-          ALPACA_OPTIONS_FEED: ${{ vars.ALPACA_OPTIONS_FEED }}
+          ALPACA_OPTIONS_FEED: ${{ vars.ALPACA_OPTIONS_FEED || 'indicative' }}
 
           PETRA_ENTRIES_ENABLED: ${{ vars.PETRA_ENTRIES_ENABLED }}
           PETRA_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || vars.PETRA_DRY_RUN }}
