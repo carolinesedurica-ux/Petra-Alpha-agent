@@ -6,7 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   getAccount, getPositions, getTrades, getDecisions, getPnl, getStatus,
   getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders,
-  getModels, getMarketLive,
+  getModels, getMarketLive, getAuthStatus, setOperatorToken,
 } from "@/lib/api";
 import { HeaderTerminal } from "@/components/HeaderTerminal";
 import { MetricsRibbon } from "@/components/MetricsRibbon";
@@ -21,24 +21,36 @@ import { OrderBlotter } from "@/components/OrderBlotter";
 import { ManualTradeModal } from "@/components/ManualTradeModal";
 import { MarketTickerStrip } from "@/components/MarketTickerStrip";
 import { TradeWindow } from "@/components/TradeWindow";
+import { TradingPlatform } from "@/components/TradingPlatform";
 import { BotActivityFeed } from "@/components/BotActivityFeed";
-import { ScrollText, ShieldCheck, History, Receipt } from "lucide-react";
+import { ScrollText, ShieldCheck, History, Receipt, LayoutGrid } from "lucide-react";
 
-const useLive = (key, fn, interval = 8000) =>
-  useQuery({ queryKey: [key], queryFn: fn, refetchInterval: interval });
+const useLive = (key, fn, interval = 8000, enabled = true) =>
+  useQuery({ queryKey: [key], queryFn: fn, refetchInterval: interval, enabled });
 
 function App() {
   const qc = useQueryClient();
-  const { data: account } = useLive("account", getAccount);
-  const { data: positions } = useLive("positions", getPositions);
-  const { data: trades } = useLive("trades", getTrades, 12000);
-  const { data: decisions } = useLive("decisions", getDecisions, 6000);
-  const { data: pnl } = useLive("pnl", getPnl, 12000);
-  const { data: orders } = useLive("orders", getOrders, 6000);
-  const { data: status } = useLive("status", getStatus, 6000);
-  const { data: liveMarket } = useLive("market-live", getMarketLive, 10000);
-  const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
-  const { data: llm } = useQuery({ queryKey: ["models"], queryFn: getModels });
+  const { data: auth, refetch: refetchAuth, isLoading: authLoading } = useQuery({
+    queryKey: ["auth-status"],
+    queryFn: getAuthStatus,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const apiEnabled = auth?.authenticated === true;
+
+  const { data: account } = useLive("account", getAccount, 8000, apiEnabled);
+  const { data: positions } = useLive("positions", getPositions, 8000, apiEnabled);
+  const { data: trades } = useLive("trades", getTrades, 12000, apiEnabled);
+  const { data: decisions } = useLive("decisions", getDecisions, 6000, apiEnabled);
+  const { data: pnl } = useLive("pnl", getPnl, 12000, apiEnabled);
+  const { data: orders } = useLive("orders", getOrders, 6000, apiEnabled);
+  const { data: status } = useLive("status", getStatus, 6000, apiEnabled);
+  const { data: liveMarket } = useLive("market-live", getMarketLive, 10000, apiEnabled);
+  const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig, enabled: apiEnabled });
+  const { data: llm } = useQuery({ queryKey: ["models"], queryFn: getModels, enabled: apiEnabled });
+
+  const [loginToken, setLoginToken] = useState("");
+  const [loginError, setLoginError] = useState("");
 
   const [riskOpen, setRiskOpen] = useState(false);
   const [payoff, setPayoff] = useState(null);
@@ -149,6 +161,63 @@ function App() {
   };
 
   const gateDecisions = (mergedDecisions || []).filter((d) => d.gate_checks?.length > 0);
+
+  const handleUnlock = async (e) => {
+    e.preventDefault();
+    const token = loginToken.trim();
+    if (!token) {
+      setLoginError("Enter the operator token configured for this deployment.");
+      return;
+    }
+    setOperatorToken(token);
+    const result = await refetchAuth();
+    if (!result.data?.authenticated) {
+      setOperatorToken("");
+      setLoginError("That operator token was not accepted.");
+      return;
+    }
+    setLoginError("");
+    setLoginToken("");
+  };
+
+  if (authLoading || !auth) {
+    return (
+      <div className="min-h-screen grain flex items-center justify-center bg-[#070b12] text-slate-300 font-mono">
+        PETRA · SECURE TERMINAL STARTING…
+      </div>
+    );
+  }
+
+  if (!auth.authenticated) {
+    return (
+      <div className="min-h-screen grain flex items-center justify-center bg-[#070b12] px-5">
+        <form onSubmit={handleUnlock} className="term-card w-full max-w-md p-6 space-y-4">
+          <div>
+            <div className="text-[#00F0B5] font-mono text-xs tracking-[0.25em] uppercase">Petra Secure Terminal</div>
+            <h1 className="text-xl font-semibold text-slate-100 mt-2">Operator authentication required</h1>
+            <p className="text-sm text-slate-500 mt-2">
+              Enter the private operator token configured in the deployment environment.
+            </p>
+          </div>
+          <input
+            type="password"
+            value={loginToken}
+            onChange={(e) => setLoginToken(e.target.value)}
+            autoComplete="current-password"
+            placeholder="PETRA_OPERATOR_TOKEN"
+            className="w-full rounded border border-slate-700 bg-[#0c111a] px-3 py-2.5 text-slate-100 outline-none focus:border-[#00F0B5]"
+          />
+          {loginError && <div className="text-sm text-rose-400">{loginError}</div>}
+          <button
+            type="submit"
+            className="w-full rounded bg-[#00F0B5] px-4 py-2.5 font-semibold text-[#07110e]"
+          >
+            Unlock Petra
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div data-testid="trading-terminal-root" className="min-h-screen grain">

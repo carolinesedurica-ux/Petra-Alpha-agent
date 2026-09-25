@@ -6,6 +6,25 @@ export const API = BACKEND_URL ? `${BACKEND_URL}/api` : "/api";
 
 const http = axios.create({ baseURL: API });
 
+const TOKEN_KEY = "petra_operator_token";
+export const getOperatorToken = () => {
+  try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
+};
+export const setOperatorToken = (token) => {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {}
+};
+
+http.interceptors.request.use((config) => {
+  const token = getOperatorToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+export const getAuthStatus = () => http.get("/auth/status").then((r) => r.data);
+
 export const getAccount = () => http.get("/account").then((r) => r.data);
 export const getPositions = () => http.get("/positions").then((r) => r.data);
 export const getTrades = () => http.get("/trades").then((r) => r.data);
@@ -31,9 +50,12 @@ export const placeManualOrder = (body) =>
   http.post("/orders/manual", body).then((r) => r.data);
 
 export async function streamChat(message, sessionId, onChunk) {
+  const token = getOperatorToken();
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(`${API}/chat`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ message, session_id: sessionId }),
   });
   const reader = res.body.getReader();

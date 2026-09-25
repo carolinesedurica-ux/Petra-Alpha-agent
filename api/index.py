@@ -18,5 +18,5 @@ async def catch_exceptions_middleware(request: Request, call_next):
         print(f"VERCEL_ERROR [{request.url.path}]:\n{err_str}")
         return JSONResponse(
             status_code=500,
-            content={"error": str(exc), "path": request.url.path, "traceback": err_str}
+            content={"error": "Internal server error", "path": request.url.path}
         )

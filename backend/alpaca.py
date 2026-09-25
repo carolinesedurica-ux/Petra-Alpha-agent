@@ -15,13 +15,14 @@ import random
 import math
 import httpx
 from datetime import datetime, timezone, timedelta, date
+from zoneinfo import ZoneInfo
 
 from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
-load_dotenv(ROOT_DIR.parent / ".env", override=True)
+load_dotenv(ROOT_DIR / ".env", override=False)
+load_dotenv(ROOT_DIR.parent / ".env", override=False)
 
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
@@ -80,7 +81,7 @@ async def log_order(db, meta, payload, result):
     await db.orders.insert_one({
         "id": new_id(), "ts": now_iso(), **meta,
         "order_type": payload.get("type"), "limit_price": payload.get("limit_price"),
-        "qty": int(payload["qty"]), "legs": payload["legs"],
+        "qty": int(payload["qty"]), "legs": payload.get("legs", []),
         "alpaca_order_id": result.get("order_id", ""), "client_order_id": payload.get("client_order_id", ""),
         "status": result.get("alpaca_status", result["status"]),
         "filled_price": result.get("filled_credit", result.get("filled_debit", 0.0)) or 0.0})
@@ -124,9 +125,16 @@ class MockAlpaca:
     # ---------- account & market state ----------
     async def ensure_seed(self):
         acc = await self.db.account.find_one({"id": "account"})
-        if not acc or acc.get("mode") != "mock":
-            for c in ("positions", "decisions", "pnl_snapshots", "market", "account"):
-                await self.db[c].delete_many({})
+        if acc and acc.get("mode") != "mock":
+            raise RuntimeError(
+                "Refusing to overwrite a non-mock Petra database from MockAlpaca. "
+                "Use a separate DB_NAME for demo/mock mode."
+            )
+        if not acc:
+            if await self.db.positions.count_documents({}) > 0:
+                raise RuntimeError(
+                    "Positions exist but the account record is missing. Refusing to seed mock state."
+                )
             await self.db.account.insert_one({
                 "id": "account", "mode": "mock", "account_number": "PA-ALPHA-PAPER-100K",
                 "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
@@ -164,9 +172,7 @@ class MockAlpaca:
             m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
         if m and "symbols" in m:
             return m["symbols"]
-        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
-                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
-                for s, cfg in UNIVERSE.items()}
+        raise RuntimeError("Live Alpaca market state unavailable; refusing to use synthetic prices.")
 
     async def advance_market(self):
         """Random-walk each underlying one step, influenced by its trend."""
@@ -191,9 +197,10 @@ class MockAlpaca:
     async def recompute_equity(self, open_positions):
         """equity = cash + net liquidation value of open credit spreads."""
         acc = await self.db.account.find_one({"id": "account"})
-        open_val = sum(p["unrealized_pnl"] for p in open_positions)
+        open_liability = sum(float(p.get("current_value", 0.0)) * 100 * int(p.get("contracts", 0))
+                             for p in open_positions)
         risk_used = sum(p["max_risk"] for p in open_positions)
-        equity = round(acc["cash"] + open_val, 2)
+        equity = round(acc["cash"] - open_liability, 2)
         buying_power = round(equity - risk_used, 2)
         await self.db.account.update_one({"id": "account"}, {"$set": {
             "equity": equity, "buying_power": buying_power, "updated_at": now_iso()}})
@@ -251,7 +258,7 @@ class MockAlpaca:
     async def close_mleg(self, position, urgent=False, reason=""):
         debit = position["current_value"]
         realized = round((position["credit"] - debit) * 100 * position["contracts"], 2)
-        await self.apply_equity_delta(realized)
+        await self.apply_equity_delta(-debit * 100 * position["contracts"])
         res = {"order_id": f"mock-{new_id()[:8]}", "status": "filled", "filled_debit": debit}
         await log_order(self.db, {"intent": "close", "underlying": position["underlying"], "strategy": position["strategy"],
                                   "reason": reason, "position_id": position["id"], "mode": "mock"}, _close_payload(position, urgent), res)
@@ -320,13 +327,20 @@ class LiveAlpaca:
     mode = "live"
     def __init__(self, db):
         self.db = db
-        raw_trading = os.environ.get("ALPACA_TRADING_URL", "https://paper-api.alpaca.markets/v2").rstrip("/")
+        raw_trading = (os.environ.get("ALPACA_TRADING_URL") or "https://paper-api.alpaca.markets/v2").strip().rstrip("/")
         if not raw_trading.endswith("/v2"):
             raw_trading += "/v2"
         self.trading = raw_trading
-        self.data = os.environ.get("ALPACA_DATA_URL", "https://data.alpaca.markets").rstrip("/")
+        self.data = (os.environ.get("ALPACA_DATA_URL") or "https://data.alpaca.markets").strip().rstrip("/")
         self.key = os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID", "")
-        self.secret = os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("APCA_API_SECRET_KEY", "")
+        self.secret = (os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET")
+                       or os.environ.get("APCA_API_SECRET_KEY", ""))
+        self.is_paper = self.trading == "https://paper-api.alpaca.markets/v2"
+        self.live_trading_armed = os.environ.get("ALLOW_LIVE_TRADING", "false").lower() == "true"
+        self.expected_account_number = os.environ.get("ALPACA_EXPECTED_ACCOUNT_NUMBER", "").strip()
+        self.options_feed = (os.environ.get("ALPACA_OPTIONS_FEED") or "indicative").strip().lower()
+        if self.options_feed not in ("indicative", "opra"):
+            raise RuntimeError("ALPACA_OPTIONS_FEED must be 'indicative' or 'opra'")
         self._chains = {}
         self._last_reconcile = None
 
@@ -354,15 +368,33 @@ class LiveAlpaca:
 
     async def ensure_seed(self):
         acc = await self.db.account.find_one({"id": "account"})
-        if not acc or acc.get("mode") != "live":
-            for c in ("positions", "decisions", "pnl_snapshots", "market", "account"):
-                await self.db[c].delete_many({})
-            raw = await self._req("GET", self.trading, "/account")
+        raw = await self._req("GET", self.trading, "/account")
+
+        if acc and acc.get("mode") == "live":
+            stored_number = str(acc.get("account_number") or "")
+            connected_number = str(raw.get("account_number") or "")
+            if stored_number and connected_number and stored_number != connected_number:
+                raise RuntimeError(
+                    "Connected Alpaca account does not match the account bound to this database. "
+                    "Use a separate DB_NAME or intentionally reset Petra state before switching accounts."
+                )
+
+        if not acc:
+            if await self.db.positions.count_documents({}) > 0:
+                raise RuntimeError(
+                    "Trading positions exist but the bound account record is missing. "
+                    "Refusing to guess which Alpaca account owns this state."
+                )
             await self.db.account.insert_one({
                 "id": "account", "mode": "live", "account_number": raw["account_number"],
                 "initial_equity": float(raw["equity"]), "equity": float(raw["equity"]),
                 "cash": float(raw["cash"]), "buying_power": float(raw["options_buying_power"]),
                 "day_start_equity": float(raw["last_equity"]), "updated_at": now_iso()})
+        elif acc.get("mode") != "live":
+            raise RuntimeError(
+                "Database is not bound to an Alpaca-backed account. "
+                "Refusing to delete or replace existing Petra history automatically; migrate or use a separate DB_NAME."
+            )
         await self._fetch_account()
         if not await self.db.market.find_one({"id": "market"}):
             await self.advance_market()
@@ -377,16 +409,11 @@ class LiveAlpaca:
     async def get_account(self):
         acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
         if not acc:
-            try:
-                await self.ensure_seed()
-                acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
-            except Exception:
-                pass
-        return acc or {
-            "id": "account", "mode": "live", "account_number": "PAPER-OFFLINE",
-            "equity": INITIAL_EQUITY, "cash": INITIAL_EQUITY, "buying_power": INITIAL_EQUITY,
-            "initial_equity": INITIAL_EQUITY, "day_start_equity": INITIAL_EQUITY, "updated_at": now_iso()
-        }
+            await self.ensure_seed()
+            acc = await self.db.account.find_one({"id": "account"}, {"_id": 0})
+        if not acc:
+            raise RuntimeError("Alpaca account state unavailable; refusing to use synthetic account values.")
+        return acc
 
     async def apply_equity_delta(self, cash_delta):
         return None  # Alpaca owns cash accounting in live mode
@@ -455,16 +482,15 @@ class LiveAlpaca:
     # ---------- market data ----------
     async def get_market(self):
         m = await self.db.market.find_one({"id": "market"}, {"_id": 0})
-        if not m or (datetime.now(timezone.utc) - datetime.fromisoformat(m["updated_at"])).total_seconds() > 45:
+        fresh = False
+        if m and m.get("updated_at"):
             try:
-                return await self.advance_market()
-            except Exception as e:  # noqa
-                pass
-        if m and "symbols" in m:
+                fresh = (datetime.now(timezone.utc) - datetime.fromisoformat(m["updated_at"])).total_seconds() <= 45
+            except Exception:
+                fresh = False
+        if fresh and m.get("symbols"):
             return m["symbols"]
-        return {s: {"price": cfg["px"], "prev_price": cfg["px"], "iv": cfg["iv"],
-                    "spacing": cfg["spacing"], "trend": 0.0, "day_open": cfg["px"]}
-                for s, cfg in UNIVERSE.items()}
+        return await self.advance_market()
 
 
     async def advance_market(self):
@@ -479,13 +505,16 @@ class LiveAlpaca:
             trade = snap.get("latestTrade") or {}
             daily = snap.get("dailyBar") or {}
             prevd = snap.get("prevDailyBar") or {}
-            price = float(trade.get("p") or daily.get("c") or old.get("price") or cfg["px"])
+            raw_price = trade.get("p") or daily.get("c")
+            if not raw_price:
+                raise RuntimeError(f"Missing fresh Alpaca market price for {s}")
+            price = float(raw_price)
             prev_close = float(prevd.get("c") or old.get("prev_price") or price)
             day_open = float(daily.get("o") or old.get("day_open") or price)
             syms[s] = {"price": round(price, 2), "prev_price": round(prev_close, 2),
                        "day_open": round(day_open, 2),
                        "trend": round((price / prev_close - 1) * 100, 2) if prev_close else 0.0,
-                       "iv": old.get("iv", cfg["iv"]), "spacing": old.get("spacing", cfg["spacing"])}
+                       "iv": old.get("iv"), "spacing": old.get("spacing")}
         await self.db.market.update_one({"id": "market"}, {"$set": {"symbols": syms, "updated_at": now_iso()}}, upsert=True)
         return syms
 
@@ -501,7 +530,7 @@ class LiveAlpaca:
         quotes = {}
         for i in range(0, len(symbols), 100):
             data = await self._req("GET", self.data, "/v1beta1/options/snapshots",
-                                   params={"symbols": ",".join(symbols[i:i + 100]), "feed": "indicative"})
+                                   params={"symbols": ",".join(symbols[i:i + 100]), "feed": self.options_feed})
             quotes.update(data.get("snapshots", {}))
         out = {}
         for p in open_positions:
@@ -511,7 +540,9 @@ class LiveAlpaca:
                 if mid <= 0 and leg["side"] == "sell":
                     ok = False
                 val += mid if leg["side"] == "sell" else -mid
-            out[p["id"]] = (round(max(0.0, val), 2), _remaining_days(p["expiry_ts"])) if ok else _bs_close_value(p, market)
+            if not ok:
+                raise RuntimeError(f"Missing live option quote needed to mark {p['underlying']} position {p['id']}")
+            out[p["id"]] = (round(max(0.0, val), 2), _remaining_days(p["expiry_ts"]))
         return out
 
     # ---------- options chain ----------
@@ -546,7 +577,7 @@ class LiveAlpaca:
             "underlying_symbols": underlying, "status": "active", "expiration_date": exp,
             "strike_price_gte": str(round(S * 0.88, 2)), "strike_price_lte": str(round(S * 1.12, 2))})
         snaps = await self._paged(self.data, "/v1beta1/options/snapshots/" + underlying, "snapshots", {
-            "expiration_date": exp, "feed": "indicative",
+            "expiration_date": exp, "feed": self.options_feed,
             "strike_price_gte": str(round(S * 0.88, 2)), "strike_price_lte": str(round(S * 1.12, 2))})
 
         chain = {"put": {}, "call": {}}
@@ -582,36 +613,18 @@ class LiveAlpaca:
     def expiry_ts(self, underlying, dte):
         if underlying in self._chains and "expiry_ts" in self._chains[underlying]:
             return self._chains[underlying]["expiry_ts"]
-        return (datetime.now(timezone.utc) + timedelta(days=dte)).isoformat()
+        raise RuntimeError(f"No verified Alpaca option chain loaded for {underlying}")
 
     def build_chain_leg(self, underlying, S, iv, opt_type, strike, T):
         if underlying in self._chains and opt_type in self._chains[underlying] and self._chains[underlying][opt_type]:
             legs = self._chains[underlying][opt_type]
             k = min(legs, key=lambda x: abs(x - strike))
             return legs[k]
-        is_call = opt_type == "call"
-        mid = bs_price(S, strike, T, iv, is_call)
-        delta = bs_delta(S, strike, T, iv, is_call)
-        spread = max(0.02, mid * 0.06)
-        bid = max(0.01, mid - spread / 2)
-        ask = mid + spread / 2
-        oi = int(max(50, 5000 * math.exp(-abs(delta) * 3) + random.randint(-200, 800)))
-        return {"strike": strike, "mid": round(mid, 2), "bid": round(bid, 2), "ask": round(ask, 2),
-                "delta": round(delta, 4), "bid_ask_pct": round(spread / mid, 4) if mid > 0 else 1.0,
-                "open_interest": oi, "symbol": None}
+        return None
 
     def find_strike_by_delta(self, underlying, S, iv, spacing, opt_type, target_delta, T):
         if underlying not in self._chains or opt_type not in self._chains[underlying] or not self._chains[underlying][opt_type]:
-            step = spacing if spacing > 0 else 1.0
-            direction = 1 if opt_type == "call" else -1
-            best_leg, min_diff = None, 999.0
-            for i in range(1, 20):
-                k = round((round(S / step) + i * direction) * step, 2)
-                leg = self.build_chain_leg(underlying, S, iv, opt_type, k, T)
-                diff = abs(abs(leg["delta"]) - target_delta)
-                if diff < min_diff:
-                    min_diff, best_leg = diff, leg
-            return best_leg
+            return None
 
         legs = self._chains[underlying][opt_type]
         otm = [l for k, l in legs.items() if (k > S if opt_type == "call" else k < S)
@@ -649,6 +662,45 @@ class LiveAlpaca:
         return await self._req("GET", self.trading, f"/orders/{order_id}")
 
     async def _submit(self, payload, meta):
+        # Production-money interlock. Paper trading is allowed; funded-account order submission
+        # requires two explicit deployment settings and an account-number match.
+        if not self.is_paper:
+            is_managed_exit = meta.get("intent") == "close"
+            if not is_managed_exit and not self.live_trading_armed:
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_trading_locked",
+                       "filled_price": 0.0, "error": "ALLOW_LIVE_TRADING is not true; new funded entries are locked"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if (not is_managed_exit and payload.get("order_class") == "mleg"
+                    and self.options_feed != "opra"):
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_options_feed_not_opra",
+                       "filled_price": 0.0, "error": "Funded multi-leg entries require ALPACA_OPTIONS_FEED=opra"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if not self.expected_account_number:
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_account_not_whitelisted",
+                       "filled_price": 0.0, "error": "ALPACA_EXPECTED_ACCOUNT_NUMBER is required"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            try:
+                raw_acc = await self._req("GET", self.trading, "/account")
+            except Exception as e:
+                res = {"order_id": "", "status": "error", "alpaca_status": "account_check_failed",
+                       "filled_price": 0.0, "error": str(e)[:300]}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if str(raw_acc.get("account_number", "")) != self.expected_account_number:
+                res = {"order_id": "", "status": "error", "alpaca_status": "live_account_mismatch",
+                       "filled_price": 0.0, "error": "Connected Alpaca account does not match whitelist"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+            if (not is_managed_exit and payload.get("order_class") == "mleg"
+                    and int(raw_acc.get("options_trading_level") or 0) < 3):
+                res = {"order_id": "", "status": "error", "alpaca_status": "options_level_insufficient",
+                       "filled_price": 0.0, "error": "Alpaca Options Level 3 is required for funded spread entries"}
+                await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                return res
+
         try:
             o = await self._req("POST", self.trading, "/orders", json=payload)
         except RuntimeError as e:

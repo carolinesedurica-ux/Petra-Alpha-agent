@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import hmac
 from datetime import datetime, timezone, timedelta
 import asyncio
 import logging
@@ -10,8 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / ".env", override=True)
-load_dotenv(ROOT_DIR.parent / ".env", override=True)
+load_dotenv(ROOT_DIR / ".env", override=False)
+load_dotenv(ROOT_DIR.parent / ".env", override=False)
 
 import traceback
 
@@ -35,9 +36,23 @@ app = FastAPI(title="Options Alpha Agent")
 api = APIRouter()
 alpaca = make_alpaca(db)
 
-CYCLE_SECONDS = int(os.environ.get("AGENT_CYCLE_SECONDS", "900"))
+# Personal deployment access control. The token is entered at runtime in the browser and
+# stored only in sessionStorage; it is never compiled into the frontend bundle.
+OPERATOR_TOKEN = os.environ.get("PETRA_OPERATOR_TOKEN", "").strip()
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw.strip())
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default %s", name, raw, default)
+        return default
+
+CYCLE_SECONDS = _env_int("AGENT_CYCLE_SECONDS", 900)
 SERVERLESS = bool(os.environ.get("VERCEL"))
-TICK_MAX_CANDIDATES = int(os.environ.get("TICK_MAX_CANDIDATES", "3"))
+TICK_MAX_CANDIDATES = _env_int("TICK_MAX_CANDIDATES", 3)
 FRONTEND_BUILD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "build")
 
 DECISIONS_CACHE_FILE = Path("/tmp/petra_decisions.json" if SERVERLESS else ROOT_DIR / ".petra_decisions.json")
@@ -46,6 +61,8 @@ POSITIONS_CACHE_FILE = Path("/tmp/petra_positions.json" if SERVERLESS else ROOT_
 
 
 def _load_tmp_cache(path: Path) -> list:
+    if alpaca.mode != "mock":
+        return []
     try:
         if path.exists():
             with open(path, "r", encoding="utf-8") as f:
@@ -56,6 +73,8 @@ def _load_tmp_cache(path: Path) -> list:
 
 
 def _save_tmp_cache(path: Path, items: list):
+    if alpaca.mode != "mock":
+        return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -108,6 +127,40 @@ async def startup():
             logger.error(f"seed_demo failed: {e}")
     if not SERVERLESS:
         asyncio.create_task(autonomous_loop())
+
+
+@app.middleware("http")
+async def operator_auth_middleware(request: Request, call_next):
+    """Protect Petra's account/trading API when connected to Alpaca.
+
+    /api/agent/tick keeps its separate CRON_SECRET authentication so GitHub Actions can run it.
+    Mock mode may run without an operator token for local development; Alpaca-backed mode fails closed.
+    """
+    path = request.url.path
+    if not path.startswith("/api/") or path in ("/api/health", "/api/auth/status", "/api/agent/tick"):
+        return await call_next(request)
+
+    if not OPERATOR_TOKEN:
+        if alpaca.mode == "mock":
+            return await call_next(request)
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "PETRA_OPERATOR_TOKEN is required before Alpaca-backed mode can be used."},
+        )
+
+    supplied = request.headers.get("authorization", "")
+    expected = f"Bearer {OPERATOR_TOKEN}"
+    if not hmac.compare_digest(supplied, expected):
+        return JSONResponse(status_code=401, content={"detail": "operator authentication required"})
+    return await call_next(request)
+
+
+@api.get("/auth/status")
+async def auth_status(request: Request):
+    if not OPERATOR_TOKEN:
+        return {"required": alpaca.mode != "mock", "authenticated": alpaca.mode == "mock"}
+    supplied = request.headers.get("authorization", "")
+    return {"required": True, "authenticated": hmac.compare_digest(supplied, f"Bearer {OPERATOR_TOKEN}")}
 
 
 @api.get("/health")
@@ -276,7 +329,7 @@ async def pnl():
     curr_eq = float(acc.get("equity", 100000.0))
     init_eq = float(acc.get("initial_equity", 100000.0))
 
-    if len(combined) < 2:
+    if len(combined) < 2 and alpaca.mode == "mock":
         now = datetime.now(timezone.utc)
         m = await alpaca.get_market()
         spy_price = m.get("SPY", {}).get("price", 590.0)
@@ -370,7 +423,8 @@ async def favicon():
 
 @api.post("/agent/run-cycle")
 async def agent_run_cycle(payload: dict = Body(default={})):
-    force = bool(payload.get("force", False))
+    # Forced cycles are demo-only. Alpaca-backed paper/live mode always respects the market clock.
+    force = bool(payload.get("force", False)) if alpaca.mode == "mock" else False
     max_c = int(payload.get("max_candidates", 1))
     result = await run_cycle(db, alpaca, force=force, max_candidates=max_c)
 
@@ -395,8 +449,11 @@ async def agent_run_cycle(payload: dict = Body(default={})):
 @api.api_route("/agent/tick", methods=["GET", "POST"])
 async def agent_tick(authorization: str = Header(default="")):
     """External scheduler hook (Vercel Cron / GitHub Actions). Runs one cycle if the market is open."""
-    secret = os.environ.get("CRON_SECRET")
-    if secret and authorization != f"Bearer {secret}":
+    secret = os.environ.get("CRON_SECRET", "").strip()
+    if not secret:
+        if alpaca.mode != "mock":
+            raise HTTPException(status_code=503, detail="CRON_SECRET is required for Alpaca-backed mode")
+    elif not hmac.compare_digest(authorization, f"Bearer {secret}"):
         raise HTTPException(status_code=401, detail="bad cron secret")
     st = await get_agent_state(db)
     if st.get("paused") or not st.get("autonomous", True):
@@ -490,10 +547,13 @@ async def evaluate_opportunity(payload: dict = Body(...)):
 @api.post("/positions/open")
 async def manual_open_position(payload: dict = Body(...)):
     """Open a position manually after reviewing agent feedback and risk."""
+    if alpaca.mode == "live":
+        await alpaca.ensure_seed()
     proposal = payload.get("proposal")
     decision_id = payload.get("decision_id")
     override_contracts = payload.get("contracts")
-    paper_sim = bool(payload.get("paper_sim", True))
+    # Never invent a fill while connected to Alpaca. Simulated fills are mock-mode only.
+    paper_sim = bool(payload.get("paper_sim", True)) if alpaca.mode == "mock" else False
 
     if not proposal and decision_id:
         dec = await db.decisions.find_one({"id": decision_id}, {"_id": 0})
@@ -509,6 +569,14 @@ async def manual_open_position(payload: dict = Body(...)):
         proposal["contracts"] = min(int(override_contracts), 10)
         risk_per = (proposal["width"] - proposal["credit"]) * 100
         proposal["max_risk"] = round(risk_per * proposal["contracts"], 2)
+
+    # Manual execution must pass the same deterministic gate as autonomous execution.
+    acc = await alpaca.get_account()
+    cur_open = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+    checks, passed, score = risk_gate(proposal, cfg, acc["equity"], cur_open)
+    if not passed:
+        fails = [c["label"] for c in checks if not c["passed"]]
+        raise HTTPException(status_code=400, detail="Risk gate rejected manual trade: " + "; ".join(fails))
 
     cycle_id = f"man-{new_id()[:6]}"
     try:
@@ -584,6 +652,10 @@ async def manual_open_position(payload: dict = Body(...)):
 @api.post("/orders/manual")
 async def manual_order(payload: dict = Body(...)):
     """Place a simple equity order manually via the Trade Window."""
+    if alpaca.mode == "live":
+        await alpaca.ensure_seed()
+    if alpaca.mode == "live" and os.environ.get("ENABLE_MANUAL_EQUITY_TRADING", "false").lower() != "true":
+        raise HTTPException(status_code=403, detail="Manual equity trading is disabled for Alpaca-backed mode.")
     symbol = payload.get("symbol", "").upper().strip()
     qty = int(payload.get("qty", 0))
     side = payload.get("side", "buy")          # buy | sell
@@ -679,7 +751,6 @@ app.add_middleware(
 )
 
 app.include_router(api, prefix="/api")
-app.include_router(api)
 
 if not SERVERLESS and os.path.isdir(FRONTEND_BUILD):
     app.mount("/", StaticFiles(directory=FRONTEND_BUILD, html=True), name="frontend")
