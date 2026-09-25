@@ -443,13 +443,32 @@ class LiveAlpaca:
             ours.update(syms)
             present = [s for s in syms if s in held]
             if len(present) == len(syms):
+                expected_qty = float(p.get("contracts") or 0)
+                qty_mismatch = [s for s in syms if abs(abs(held.get(s, 0.0)) - expected_qty) > 1e-9]
+                if not qty_mismatch:
+                    continue
+                if not p.get("reconcile_warned"):
+                    await self.db.positions.update_one({"id": p["id"]}, {"$set": {
+                        "reconcile_warned": True,
+                        "management_status": "review_required",
+                        "reconciliation_notes": "Broker leg quantities no longer match Petra contracts; possible partial close/fill. Automated management frozen."
+                    }})
+                    await self.db.decisions.insert_one(Decision(
+                        cycle_id="reconcile", underlying=p["underlying"], strategy=p["strategy"], outcome="error",
+                        reason=("RECONCILE: all option legs exist but broker quantities differ from Petra contracts — "
+                                "possible partial close/fill. Automated management frozen."),
+                        position_id=p["id"]).model_dump())
                 continue
             if present:
                 if not p.get("reconcile_warned"):
-                    await self.db.positions.update_one({"id": p["id"]}, {"$set": {"reconcile_warned": True}})
+                    await self.db.positions.update_one({"id": p["id"]}, {"$set": {
+                        "reconcile_warned": True,
+                        "management_status": "review_required",
+                        "reconciliation_notes": "Only some expected option legs remain at Alpaca; possible partial fill/assignment. Automated management frozen."
+                    }})
                     await self.db.decisions.insert_one(Decision(
                         cycle_id="reconcile", underlying=p["underlying"], strategy=p["strategy"], outcome="error",
-                        reason=f"RECONCILE: only {len(present)}/{len(syms)} legs found at Alpaca — partial fill/assignment? Review manually.",
+                        reason=f"RECONCILE: only {len(present)}/{len(syms)} legs found at Alpaca — partial fill/assignment? Automated management frozen.",
                         position_id=p["id"]).model_dump())
                 continue
             expired = datetime.fromisoformat(p["expiry_ts"]) < now
@@ -635,30 +654,53 @@ class LiveAlpaca:
 
     # ---------- orders ----------
     async def _await_fill(self, order_id, wait_s=None):
+        """Wait for a broker-terminal order state and explicitly handle cancel races.
+
+        GitHub worker runs are not latency constrained like the old Vercel function, so
+        allow a reasonable fill window. After a cancel request, poll again because an
+        execution can race the cancel. The caller must treat any partial/unresolved
+        quantity as review-required rather than retrying blindly.
+        """
+        terminal = {"filled", "canceled", "rejected", "expired", "done_for_day"}
+        if wait_s is None:
+            wait_s = 20
+
         is_open = await self.market_open()
         if not is_open:
-            # Market closed: options cannot execute outside regular market hours (09:30-16:00 ET).
-            # Avoid sleeping 15s to prevent Vercel 504 gateway timeouts.
-            o = await self._req("GET", self.trading, f"/orders/{order_id}")
-            if o["status"] in ("filled", "canceled", "rejected", "expired"):
-                return o
-            try:
-                await self._req("DELETE", self.trading, f"/orders/{order_id}")
-            except RuntimeError:
-                pass
-            return await self._req("GET", self.trading, f"/orders/{order_id}")
+            wait_s = 0
 
-        if wait_s is None:
-            wait_s = 3
-        for _ in range(max(1, wait_s // 2)):
+        o = await self._req("GET", self.trading, f"/orders/{order_id}")
+        if str(o.get("status") or "").lower() in terminal:
+            return o
+
+        deadline = asyncio.get_running_loop().time() + max(0, wait_s)
+        while asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(1.5)
             o = await self._req("GET", self.trading, f"/orders/{order_id}")
-            if o["status"] in ("filled", "canceled", "rejected", "expired"):
+            if str(o.get("status") or "").lower() in terminal:
                 return o
+
+        # Re-read immediately before cancel so a just-filled order is never canceled/reported
+        # from stale state.
+        o = await self._req("GET", self.trading, f"/orders/{order_id}")
+        if str(o.get("status") or "").lower() in terminal:
+            return o
+
         try:
             await self._req("DELETE", self.trading, f"/orders/{order_id}")
         except RuntimeError:
+            # A fill/cancel may have won the race. The follow-up reads below are authoritative.
             pass
+
+        cancel_deadline = asyncio.get_running_loop().time() + 10
+        while asyncio.get_running_loop().time() < cancel_deadline:
+            await asyncio.sleep(1.0)
+            o = await self._req("GET", self.trading, f"/orders/{order_id}")
+            if str(o.get("status") or "").lower() in terminal:
+                return o
+
+        # Still pending after cancel window: return broker state and let the caller freeze
+        # management for human/broker reconciliation.
         return await self._req("GET", self.trading, f"/orders/{order_id}")
 
     async def _submit(self, payload, meta):
@@ -701,6 +743,30 @@ class LiveAlpaca:
                 await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
                 return res
 
+        # Close-order idempotency: never submit another close while Alpaca already
+        # has a working order touching the same option legs. This also protects recovery
+        # after a worker crash immediately after POST.
+        if meta.get("intent") == "close" and payload.get("order_class") == "mleg":
+            target_symbols = {str(x.get("symbol")) for x in payload.get("legs", []) if x.get("symbol")}
+            existing_orders = await self._req(
+                "GET", self.trading, "/orders",
+                params={"status": "open", "limit": 500, "nested": "true"},
+            )
+            for existing in existing_orders:
+                existing_symbols = {str(x.get("symbol")) for x in (existing.get("legs") or []) if x.get("symbol")}
+                if target_symbols and target_symbols & existing_symbols:
+                    res = {
+                        "order_id": str(existing.get("id") or ""),
+                        "status": "review_required",
+                        "alpaca_status": str(existing.get("status") or "open"),
+                        "filled_price": abs(float(existing.get("filled_avg_price") or 0)),
+                        "filled_qty": float(existing.get("filled_qty") or 0),
+                        "requested_qty": float(existing.get("qty") or payload.get("qty") or 0),
+                        "error": "existing close-related broker order found; refusing duplicate submission",
+                    }
+                    await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
+                    return res
+
         try:
             o = await self._req("POST", self.trading, "/orders", json=payload)
         except RuntimeError as e:
@@ -708,9 +774,28 @@ class LiveAlpaca:
             await log_order(self.db, {**meta, "error": res["error"]}, payload, res)
             return res
         o = await self._await_fill(o["id"])
+        broker_status = str(o.get("status") or "unknown").lower()
         px = abs(float(o.get("filled_avg_price") or 0))
-        res = {"order_id": o["id"], "status": o["status"] if o["status"] == "filled" else "unfilled",
-               "alpaca_status": o["status"], "filled_price": px}
+        requested_qty = float(o.get("qty") or payload.get("qty") or 0)
+        filled_qty = float(o.get("filled_qty") or 0)
+
+        if broker_status == "filled" and requested_qty > 0 and filled_qty >= requested_qty:
+            petra_status = "filled"
+        elif filled_qty > 0 or broker_status == "partially_filled":
+            petra_status = "partial_review"
+        elif broker_status in {"canceled", "rejected", "expired", "done_for_day"}:
+            petra_status = "unfilled"
+        else:
+            petra_status = "review_required"
+
+        res = {
+            "order_id": o.get("id", ""),
+            "status": petra_status,
+            "alpaca_status": broker_status,
+            "filled_price": px,
+            "filled_qty": filled_qty,
+            "requested_qty": requested_qty,
+        }
         await log_order(self.db, meta, payload, res)
         return res
 
