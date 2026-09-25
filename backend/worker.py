@@ -92,6 +92,16 @@ async def main() -> int:
                 {"_id": 0},
             ).to_list(500)
             if (broker_positions or broker_orders) and not db_open:
+                if settings.dry_run:
+                    await _finish_run(
+                        db, run_id, 0, "shadow_broker_state_needs_review",
+                        "Alpaca has positions or working orders but Mongo has no managed open state; no orders permitted",
+                    )
+                    log.warning(
+                        "Shadow observation complete: broker state exists but Mongo has no managed open state; "
+                        "trading remains blocked pending reconciliation"
+                    )
+                    return 0
                 await _finish_run(
                     db, run_id, 2, "broker_state_needs_review",
                     "Alpaca has positions or working orders but Mongo has no managed open state",
