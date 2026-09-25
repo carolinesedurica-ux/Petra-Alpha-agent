@@ -80,6 +80,25 @@ async def main() -> int:
             raw_account = await broker._req("GET", broker.trading, "/account")
             await store.assert_account_binding(raw_account, settings.expected_account_number)
 
+            # Fresh-database protection: never assume the Alpaca account is flat.
+            # If broker state exists but Mongo has no matching managed state yet, stop for review.
+            broker_positions = await broker._req("GET", broker.trading, "/positions")
+            broker_orders = await broker._req(
+                "GET", broker.trading, "/orders",
+                params={"status": "open", "limit": 500, "nested": "true"},
+            )
+            db_open = await db.positions.find(
+                {"status": {"$in": ["open", "closing", "pending_entry"]}},
+                {"_id": 0},
+            ).to_list(500)
+            if (broker_positions or broker_orders) and not db_open:
+                await _finish_run(
+                    db, run_id, 2, "broker_state_needs_review",
+                    "Alpaca has positions or working orders but Mongo has no managed open state",
+                )
+                log.error("Broker state exists but Mongo has no managed open state; human review required")
+                return 2
+
             # Safe now: ensure_seed cannot delete or replace a mismatched database.
             await broker.ensure_seed()
             await lease.assert_owned()
