@@ -1,0 +1,70 @@
+name: Petra one-time broker reconciliation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/petra-reconcile-once.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: petra-paper-worker
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: paper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-worker.txt
+      - name: Install Petra worker dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-worker.txt
+      - name: Import existing Alpaca paper state into Mongo review queue
+        working-directory: backend
+        env:
+          PETRA_BROKER_ENV: paper
+          ALLOW_LIVE_TRADING: "false"
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          ALPACA_EXPECTED_ACCOUNT_NUMBER: ${{ secrets.ALPACA_EXPECTED_ACCOUNT_NUMBER }}
+          MONGO_URL: ${{ secrets.PETRA_WORKER_MONGO_URL }}
+          DB_NAME: petra_paper
+          FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
+          ALPACA_OPTIONS_FEED: indicative
+          PETRA_ENTRIES_ENABLED: "false"
+          PETRA_DRY_RUN: "true"
+          TICK_MAX_CANDIDATES: "1"
+          PETRA_LEASE_TTL_SECONDS: "900"
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python reconcile_existing.py
+      - name: Verify imported state in zero-order shadow mode
+        working-directory: backend
+        env:
+          PETRA_BROKER_ENV: paper
+          ALLOW_LIVE_TRADING: "false"
+          ALPACA_PAPER_API_KEY: ${{ secrets.ALPACA_PAPER_API_KEY }}
+          ALPACA_PAPER_SECRET_KEY: ${{ secrets.ALPACA_PAPER_SECRET_KEY }}
+          ALPACA_EXPECTED_ACCOUNT_NUMBER: ${{ secrets.ALPACA_EXPECTED_ACCOUNT_NUMBER }}
+          MONGO_URL: ${{ secrets.PETRA_WORKER_MONGO_URL }}
+          DB_NAME: petra_paper
+          FEATHERLESS_API_KEY: ${{ secrets.FEATHERLESS_API_KEY }}
+          ALPACA_OPTIONS_FEED: indicative
+          PETRA_ENTRIES_ENABLED: "false"
+          PETRA_DRY_RUN: "true"
+          TICK_MAX_CANDIDATES: "1"
+          PETRA_LEASE_TTL_SECONDS: "900"
+          GITHUB_RUN_ID: ${{ github.run_id }}-verify
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python worker.py
