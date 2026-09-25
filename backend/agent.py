@@ -93,9 +93,26 @@ async def close_position(db, alpaca, p, reason, cycle_id):
     """Route a closing mleg order (market if urgent); persist only on fill."""
     res = await alpaca.close_mleg(p, urgent=reason != "take_profit", reason=reason)
     if res["status"] != "filled":
+        review_status = res["status"] in {"partial_review", "review_required"}
+        if review_status:
+            await db.positions.update_one({"id": p["id"]}, {"$set": {
+                "management_status": "review_required",
+                "reconcile_warned": True,
+                "reconciliation_notes": (
+                    f"Close order {res.get('order_id') or 'unknown'} returned "
+                    f"{res.get('alpaca_status', res['status'])}; filled "
+                    f"{res.get('filled_qty', 0)}/{res.get('requested_qty', p.get('contracts', 0))}. "
+                    "Automated exits frozen pending broker reconciliation."
+                ),
+                "last_close_order_id": res.get("order_id", ""),
+            }})
         await db.decisions.insert_one(Decision(
             cycle_id=cycle_id, underlying=p["underlying"], strategy=p["strategy"], outcome="error",
-            reason=f"EXIT [{reason}] close order {res.get('alpaca_status', res['status'])} — position stays open, retry next cycle",
+            reason=(
+                f"EXIT [{reason}] close order {res.get('alpaca_status', res['status'])} — "
+                + ("automated management frozen for reconciliation"
+                   if review_status else "zero-fill/unfilled; position stays open and may retry next cycle")
+            ),
             position_id=p["id"]).model_dump())
         return {"closed": False, "status": res["status"]}
     realized = round((p["credit"] - res["filled_debit"]) * 100 * p["contracts"], 2)
