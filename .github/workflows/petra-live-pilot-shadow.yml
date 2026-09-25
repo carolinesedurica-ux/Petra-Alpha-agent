@@ -1,0 +1,54 @@
+name: Petra micro-live shadow
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: petra-micro-live-pilot
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: live-pilot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements-worker.txt
+
+      - name: Install micro-live dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-worker.txt
+
+      - name: Run funded-account shadow validation
+        working-directory: backend
+        env:
+          ALLOW_LIVE_TRADING: "false"
+          ALPACA_LIVE_TRADING_URL: "https://api.alpaca.markets/v2"
+          ALPACA_LIVE_API_KEY: ${{ secrets.ALPACA_LIVE_API_KEY }}
+          ALPACA_LIVE_SECRET_KEY: ${{ secrets.ALPACA_LIVE_SECRET_KEY }}
+          ALPACA_LIVE_EXPECTED_ACCOUNT_NUMBER: ${{ secrets.ALPACA_LIVE_EXPECTED_ACCOUNT_NUMBER }}
+          PETRA_LIVE_MONGO_URL: ${{ secrets.PETRA_LIVE_MONGO_URL }}
+          PETRA_LIVE_DB_NAME: ${{ vars.PETRA_LIVE_DB_NAME || 'petra_live_pilot' }}
+          PETRA_LIVE_SYMBOLS: ${{ vars.PETRA_LIVE_SYMBOLS || 'SPY,QQQ' }}
+          PETRA_LIVE_TRADE_NOTIONAL_USD: ${{ vars.PETRA_LIVE_TRADE_NOTIONAL_USD || '5' }}
+          PETRA_LIVE_MAX_ALLOCATION_PCT: ${{ vars.PETRA_LIVE_MAX_ALLOCATION_PCT || '20' }}
+          PETRA_LIVE_DAILY_LOSS_USD: ${{ vars.PETRA_LIVE_DAILY_LOSS_USD || '1' }}
+          PETRA_LIVE_STOP_LOSS_PCT: ${{ vars.PETRA_LIVE_STOP_LOSS_PCT || '0.60' }}
+          PETRA_LIVE_TAKE_PROFIT_PCT: ${{ vars.PETRA_LIVE_TAKE_PROFIT_PCT || '0.80' }}
+          PETRA_LIVE_MAX_HOLD_MINUTES: ${{ vars.PETRA_LIVE_MAX_HOLD_MINUTES || '120' }}
+          PETRA_LIVE_ENTRY_MOMENTUM_PCT: ${{ vars.PETRA_LIVE_ENTRY_MOMENTUM_PCT || '0.15' }}
+          PETRA_LIVE_DRY_RUN: "true"
+          PETRA_LIVE_PILOT_ARMED: "false"
+          PETRA_LIVE_EXECUTION_CONFIRM: ""
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: python live_pilot.py
