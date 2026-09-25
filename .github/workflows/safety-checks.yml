@@ -3,6 +3,7 @@ name: Petra safety checks
 on:
   push:
     branches:
+      - main
       - production-hardening-paper
   pull_request:
     branches:
