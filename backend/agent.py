@@ -74,6 +74,8 @@ async def manage_positions(db, alpaca, cfg, cycle_id):
     open_pos, market = await mark_positions(db, alpaca)
     events = []
     for p in open_pos:
+        if p.get("management_status", "managed") != "managed":
+            continue
         reason = None
         if p["current_value"] <= p["credit"] * (1 - cfg["tp_pct"]):
             reason = "take_profit"
@@ -153,6 +155,18 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
         await _bump_cycle(db, state)
         return {"cycle_id": cycle_id, "status": "daily_loss_stop", "market": mkt,
                 "exits": exits, "decisions": [dec.model_dump()],
+                "equity": equity, "open_positions": len(open_pos)}
+
+    if any(p.get("management_status", "managed") != "managed" for p in open_pos):
+        dec = Decision(
+            cycle_id=cycle_id, underlying="—", outcome="skipped",
+            reason="Imported/reconciled positions still require management review — no new risk."
+        )
+        await db.decisions.insert_one(dec.model_dump())
+        await record_snapshot(db, equity, open_pos)
+        await _bump_cycle(db, state)
+        return {"cycle_id": cycle_id, "status": "reconciliation_review",
+                "market": mkt, "exits": exits, "decisions": [dec.model_dump()],
                 "equity": equity, "open_positions": len(open_pos)}
 
     market = await alpaca.get_market()
