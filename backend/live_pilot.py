@@ -75,6 +75,12 @@ class LivePilotBroker:
     async def asset(self, symbol: str):
         return await self.req("GET", self.trading, f"/assets/{symbol}")
 
+    async def by_client_order_id(self, client_order_id: str):
+        return await self.req(
+            "GET", self.trading, "/orders:by_client_order_id",
+            params={"client_order_id": client_order_id},
+        )
+
     async def snapshots(self, symbols):
         return await self.req(
             "GET", self.data, "/v2/stocks/snapshots",
@@ -128,7 +134,53 @@ class LivePilotBroker:
         else:
             raise LivePilotSettingsError("Unsupported micro-live order intent")
 
-        raw = await self.req("POST", self.trading, "/orders", json=payload)
+        client_id = str(payload.get("client_order_id") or "")
+        if not client_id.startswith("petra-micro-") or len(client_id) > 48:
+            raise LivePilotSettingsError("Invalid or missing deterministic micro-live client order ID")
+
+        # A DB record MUST exist before we approach the funded order endpoint.
+        # Once stored, even an unknown HTTP result blocks all future submissions.
+        await self.db.micro_orders.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_order_id": client_id,
+            "ts": now_iso(),
+            "intent": intent,
+            "symbol": symbol,
+            "notional": float(payload.get("notional") or 0),
+            "qty": float(payload.get("qty") or 0),
+            "status": "intent_recorded",
+            "settled": False,
+        })
+        try:
+            raw = await self.req("POST", self.trading, "/orders", json=payload)
+        except Exception as exc:
+            # A transport exception does NOT prove that the order was rejected.
+            # Read by client ID; never re-POST the same or a new order automatically.
+            order_id = None
+            try:
+                found = await self.by_client_order_id(client_id)
+                order_id = str(found.get("id") or "") or None
+            except Exception:
+                pass
+            await self.db.micro_orders.update_one(
+                {"client_order_id": client_id},
+                {"$set": {
+                    "status": "submission_unknown",
+                    "broker_order_id": order_id,
+                    "updated_at": now_iso(),
+                }},
+            )
+            raise StoreError("Order submission status is uncertain; manual broker reconciliation required") from exc
+        await self.db.micro_orders.update_one(
+            {"client_order_id": client_id},
+            {"$set": {
+                "status": "broker_accepted",
+                "broker_order_id": str(raw.get("id") or ""),
+                "updated_at": now_iso(),
+            }},
+        )
+        if not raw.get("id"):
+            raise StoreError("Broker accepted an order without an ID; manual reconciliation required")
         final = await self.await_order(str(raw["id"]))
         status = str(final.get("status") or "unknown").lower()
         requested_qty = float(final.get("qty") or payload.get("qty") or 0)
@@ -151,23 +203,35 @@ class LivePilotBroker:
         else:
             result["status"] = "review_required"
 
-        await self.db.micro_orders.insert_one({
-            "id": str(uuid.uuid4()),
-            "ts": now_iso(),
-            "intent": intent,
-            "symbol": symbol,
-            "notional": float(payload.get("notional") or 0),
-            "qty": float(payload.get("qty") or 0),
-            **result,
-        })
+        await self.db.micro_orders.update_one(
+            {"client_order_id": client_id},
+            {"$set": {
+                **result,
+                "status": result["status"],
+                "settled": result["status"] == "unfilled" and filled_qty == 0,
+                "updated_at": now_iso(),
+            }},
+        )
         return result
 
 
-def _snapshot_metrics(symbol: str, snap: dict):
+def _snapshot_metrics(symbol: str, snap: dict, *, at=None):
     trade = snap.get("latestTrade") or {}
     daily = snap.get("dailyBar") or {}
     prev = snap.get("prevDailyBar") or {}
-    price = float(trade.get("p") or daily.get("c") or 0)
+    stamp = trade.get("t")
+    if not stamp:
+        return None  # A daily-bar close must not masquerade as a current executable quote.
+    try:
+        observed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            return None
+        age = ((at or datetime.now(timezone.utc)) - observed.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 0 <= age <= 180:
+        return None  # Refuse stale/future-dated IEX trade data.
+    price = float(trade.get("p") or 0)
     day_open = float(daily.get("o") or 0)
     prev_close = float(prev.get("c") or 0)
     if price <= 0 or day_open <= 0 or prev_close <= 0:
@@ -233,10 +297,10 @@ async def manage_open_position(db, broker, settings, position, metrics, clock):
 
     managed_qty = float(position.get("qty") or 0)
     broker_qty = abs(float(raw.get("qty") or 0))
-    if managed_qty <= 0 or broker_qty + 1e-9 < managed_qty:
+    if managed_qty <= 0 or abs(broker_qty - managed_qty) > 1e-9 or str(raw.get("side") or "").lower() != "long":
         await db.micro_positions.update_one({"id": position["id"]}, {"$set": {
             "management_status": "review_required",
-            "review_reason": "Broker quantity is smaller than Petra managed quantity",
+            "review_reason": "Broker quantity or side differs from Petra managed position",
             "updated_at": now_iso(),
         }})
         raise StoreError("Micro-live broker quantity mismatch")
@@ -305,12 +369,21 @@ async def manage_open_position(db, broker, settings, position, metrics, clock):
         "closed_at": now_iso(),
         "updated_at": now_iso(),
     }})
+    await db.micro_orders.update_one(
+        {"client_order_id": result["client_order_id"]},
+        {"$set": {"settled": True, "updated_at": now_iso()}},
+    )
     return f"closed_{reason}"
 
 
 async def maybe_enter(db, broker, settings, snapshots, account, clock):
-    # Existing broker holdings in a pilot symbol must never be mixed with a new Petra lot.
-    broker_positions = {str(p.get("symbol")): p for p in await broker.positions()}
+    # Tiny pilot owns the entire connected brokerage account for execution purposes:
+    # a position or working order outside the ledger is a mandatory manual review.
+    broker_positions = await broker.positions()
+    broker_orders = await broker.open_orders()
+    if broker_positions or broker_orders:
+        log.warning("Broker contains holdings or working orders; no micro-live entry")
+        return "foreign_account_activity"
     managed_open = await db.micro_positions.find_one({"status": "open"}, {"_id": 0})
     if managed_open:
         return "position_exists"
@@ -320,9 +393,6 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
 
     metrics = []
     for symbol in settings.symbols:
-        if symbol in broker_positions:
-            log.warning("Skipping %s: funded account already holds it outside the micro-live position ledger", symbol)
-            continue
         asset = await broker.asset(symbol)
         if not asset.get("tradable") or not asset.get("fractionable"):
             continue
@@ -342,9 +412,6 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
     if not candidates:
         return "no_signal"
     chosen = max(candidates, key=lambda m: m["change_pct"])
-
-    if await _working_order_for_symbol(broker, chosen["symbol"]):
-        return "working_order"
 
     cash = float(account.get("cash") or 0)
     allocation_cap = cash * settings.max_allocation_pct / 100.0
@@ -398,6 +465,10 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
             "from_open_pct": round(chosen["from_open_pct"], 4),
         },
     })
+    await db.micro_orders.update_one(
+        {"client_order_id": result["client_order_id"]},
+        {"$set": {"settled": True, "updated_at": now_iso()}},
+    )
     return "entry_filled"
 
 
@@ -411,6 +482,7 @@ async def main() -> int:
         await db.micro_runs.create_index("run_id", unique=True)
         await db.micro_positions.create_index("id", unique=True)
         await db.micro_positions.create_index([("status", 1), ("symbol", 1)])
+        await db.micro_orders.create_index("client_order_id", unique=True)
 
         async with Lease(store, owner=f"micro-{settings.run_id}", ttl_seconds=900):
             broker = LivePilotBroker(settings, db)
@@ -432,18 +504,30 @@ async def main() -> int:
             }
 
             open_pos = await db.micro_positions.find_one({"status": "open"}, {"_id": 0})
+            if await db.micro_positions.count_documents({"status": "open"}) > 1:
+                raise StoreError("Multiple managed live positions found; no action until reconciliation")
+            if await db.micro_orders.count_documents({"settled": {"$ne": True}}):
+                raise StoreError("Unsettled live order intent requires manual broker reconciliation")
             snapshots = await broker.snapshots(settings.symbols)
 
             realized = await _realized_today(db)
             unrealized = 0.0
-            if open_pos:
+            if open_pos and clock.get("is_open"):
                 m = _snapshot_metrics(open_pos["symbol"], snapshots.get(open_pos["symbol"]) or {})
                 if not m:
-                    raise StoreError("No live IEX snapshot for managed micro-live position")
+                    raise StoreError("No fresh IEX trade for managed micro-live position; manual review required")
                 unrealized = round((m["price"] - float(open_pos["entry_price"])) * float(open_pos["qty"]), 4)
 
+            # Broker equity is a second, conservative daily-loss tripwire.
+            # Deposits/withdrawals can affect this difference; do not claim it is pure P&L.
+            last_equity = float(account.get("last_equity") or 0)
+            broker_day_delta = (round(float(account.get("equity") or 0) - last_equity, 4)
+                                if last_equity > 0 else None)
             day_pnl = round(realized + unrealized, 4)
+            if broker_day_delta is not None:
+                day_pnl = min(day_pnl, broker_day_delta)
             run["day_pnl"] = day_pnl
+            run["broker_day_delta_available"] = broker_day_delta is not None
 
             # Existing risk may still be exited even after the daily-loss stop. The stop only blocks entries.
             if open_pos:
@@ -455,7 +539,9 @@ async def main() -> int:
                     metrics = _snapshot_metrics(open_pos["symbol"], snapshots.get(open_pos["symbol"]) or {})
                     run["result"] = await manage_open_position(db, broker, settings, open_pos, metrics, clock)
             else:
-                if day_pnl <= -settings.daily_loss_usd:
+                if settings.can_submit and broker_day_delta is None:
+                    run["result"] = "day_equity_unavailable"
+                elif day_pnl <= -settings.daily_loss_usd:
                     run["result"] = "daily_loss_stop"
                 elif not clock.get("is_open"):
                     run["result"] = "market_closed"
