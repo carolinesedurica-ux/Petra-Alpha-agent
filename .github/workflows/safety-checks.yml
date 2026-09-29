@@ -108,5 +108,20 @@ jobs:
         run: |
           python -m compileall -q backend/settings.py backend/store.py backend/worker.py backend/live_pilot_settings.py backend/live_pilot.py backend/configure_paper_entry_pilot.py
           python -c "import sys; sys.path.insert(0, 'backend'); import worker, live_pilot; print('worker imports OK')"
-      - name: Verify paper and micro-live fail-closed settings
-        run: pytest backend/tests/test_worker_settings.py backend/tests/test_live_pilot_settings.py -q
+      - name: Verify paper, micro-live, and adversarial fail-closed behavior
+        run: pytest backend/tests/test_worker_settings.py backend/tests/test_live_pilot_settings.py backend/tests/test_live_pilot_adversarial.py -q
+
+  security-audit:
+    name: Dependency and live-worker static security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install audit scanners
+        run: python -m pip install pip-audit bandit
+      - name: Audit pinned worker packages
+        run: pip-audit --progress-spinner off -r backend/requirements-worker.txt
+      - name: Scan funded-worker code for high-severity security patterns
+        run: bandit -q -lll backend/live_pilot.py backend/live_pilot_settings.py
