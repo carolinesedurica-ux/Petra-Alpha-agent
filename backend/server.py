@@ -134,18 +134,19 @@ async def operator_auth_middleware(request: Request, call_next):
     """Protect Petra's account/trading API when connected to Alpaca.
 
     /api/agent/tick keeps its separate CRON_SECRET authentication so GitHub Actions can run it.
-    Mock mode may run without an operator token for local development; Alpaca-backed mode fails closed.
+    Only non-serverless local mock development may run without an operator token.
+    Hosted mock deployments fail closed too; they contain mutable API endpoints.
     """
     path = request.url.path
     if not path.startswith("/api/") or path in ("/api/health", "/api/auth/status", "/api/agent/tick"):
         return await call_next(request)
 
     if not OPERATOR_TOKEN:
-        if alpaca.mode == "mock":
+        if alpaca.mode == "mock" and not SERVERLESS:
             return await call_next(request)
         return JSONResponse(
             status_code=503,
-            content={"detail": "PETRA_OPERATOR_TOKEN is required before Alpaca-backed mode can be used."},
+            content={"detail": "PETRA_OPERATOR_TOKEN must be configured for hosted or Alpaca-backed API access."},
         )
 
     supplied = request.headers.get("authorization", "")
@@ -158,7 +159,8 @@ async def operator_auth_middleware(request: Request, call_next):
 @api.get("/auth/status")
 async def auth_status(request: Request):
     if not OPERATOR_TOKEN:
-        return {"required": alpaca.mode != "mock", "authenticated": alpaca.mode == "mock"}
+        local_demo = alpaca.mode == "mock" and not SERVERLESS
+        return {"required": not local_demo, "authenticated": local_demo}
     supplied = request.headers.get("authorization", "")
     return {"required": True, "authenticated": hmac.compare_digest(supplied, f"Bearer {OPERATOR_TOKEN}")}
 
@@ -170,19 +172,10 @@ async def root():
 
 @api.get("/debug")
 async def debug_endpoint():
-    return {
-        "status": "ok",
-        "service": "Options Alpha Agent",
-        "mode": alpaca.mode,
-        "python": sys.version,
-        "cwd": os.getcwd(),
-        "files_root": os.listdir(".") if os.path.exists(".") else [],
-        "sys_path": sys.path,
-        "env_has_alpaca_key": bool(os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")),
-        "env_has_alpaca_secret": bool(os.environ.get("ALPACA_SECRET_KEY") or os.environ.get("ALPACA_API_SECRET") or os.environ.get("APCA_API_SECRET_KEY")),
-        "env_has_featherless_key": bool(os.environ.get("FEATHERLESS_API_KEY")),
-        "env_keys": [k for k in os.environ.keys() if "KEY" not in k and "SECRET" not in k],
-    }
+    # Never return environment names, process paths or runtime metadata from a hosted app.
+    if SERVERLESS:
+        raise HTTPException(status_code=404, detail="Not found")
+    return {"status": "local_debug", "message": "Runtime metadata redacted"}
 
 
 @api.get("/mcp/status")
@@ -196,7 +189,7 @@ async def mcp_status():
                 "name": "Official Alpaca MCP Server",
                 "package": "alpaca-mcp-server v2.3.1",
                 "mode": "paper",
-                "account_id": acc.get("account_number", "PA39X74UN8VF"),
+                "account_id": "configured" if acc.get("account_number") else "unavailable",
                 "status": "active"
             },
             "petra_alpha": {
@@ -451,8 +444,8 @@ async def agent_tick(authorization: str = Header(default="")):
     """External scheduler hook (Vercel Cron / GitHub Actions). Runs one cycle if the market is open."""
     secret = os.environ.get("CRON_SECRET", "").strip()
     if not secret:
-        if alpaca.mode != "mock":
-            raise HTTPException(status_code=503, detail="CRON_SECRET is required for Alpaca-backed mode")
+        if alpaca.mode != "mock" or SERVERLESS:
+            raise HTTPException(status_code=503, detail="CRON_SECRET is required for hosted or Alpaca-backed mode")
     elif not hmac.compare_digest(authorization, f"Bearer {secret}"):
         raise HTTPException(status_code=401, detail="bad cron secret")
     st = await get_agent_state(db)
@@ -741,13 +734,19 @@ async def chat(payload: dict = Body(...)):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
+# Hosted UI uses same-origin /api paths, so it needs no wildcard cross-origin API access.
+# Configure specific HTTPS origins explicitly if a separate hosted frontend is required.
+_CORS_ORIGINS = [o.strip() for o in os.environ.get("CORS_ORIGINS", "").split(",") if o.strip()]
+if SERVERLESS:
+    _CORS_ORIGINS = [o for o in _CORS_ORIGINS if o.startswith("https://") and o != "*"]
+else:
+    _CORS_ORIGINS = _CORS_ORIGINS or ["http://localhost:3000", "http://localhost:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=[o.strip() for o in os.environ.get('CORS_ORIGINS', '*').split(',') if o.strip()],
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_credentials=False,
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(api, prefix="/api")
