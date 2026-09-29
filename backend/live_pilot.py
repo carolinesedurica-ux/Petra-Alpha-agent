@@ -393,7 +393,7 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
 
     metrics = []
     for symbol in settings.symbols:
-         asset = await broker.asset(symbol)
+        asset = await broker.asset(symbol)
         if not asset.get("tradable") or not asset.get("fractionable"):
             continue
         m = _snapshot_metrics(symbol, snapshots.get(symbol) or {})
