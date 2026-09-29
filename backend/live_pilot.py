@@ -75,6 +75,12 @@ class LivePilotBroker:
     async def asset(self, symbol: str):
         return await self.req("GET", self.trading, f"/assets/{symbol}")
 
+    async def by_client_order_id(self, client_order_id: str):
+        return await self.req(
+            "GET", self.trading, "/orders:by_client_order_id",
+            params={"client_order_id": client_order_id},
+        )
+
     async def snapshots(self, symbols):
         return await self.req(
             "GET", self.data, "/v2/stocks/snapshots",
@@ -128,7 +134,53 @@ class LivePilotBroker:
         else:
             raise LivePilotSettingsError("Unsupported micro-live order intent")
 
-        raw = await self.req("POST", self.trading, "/orders", json=payload)
+        client_id = str(payload.get("client_order_id") or "")
+        if not client_id.startswith("petra-micro-") or len(client_id) > 48:
+            raise LivePilotSettingsError("Invalid or missing deterministic micro-live client order ID")
+
+        # A DB record MUST exist before we approach the funded order endpoint.
+        # Once stored, even an unknown HTTP result blocks all future submissions.
+        await self.db.micro_orders.insert_one({
+            "id": str(uuid.uuid4()),
+            "client_order_id": client_id,
+            "ts": now_iso(),
+            "intent": intent,
+            "symbol": symbol,
+            "notional": float(payload.get("notional") or 0),
+            "qty": float(payload.get("qty") or 0),
+            "status": "intent_recorded",
+            "settled": False,
+        })
+        try:
+            raw = await self.req("POST", self.trading, "/orders", json=payload)
+        except Exception as exc:
+            # A transport exception does NOT prove that the order was rejected.
+            # Read by client ID; never re-POST the same or a new order automatically.
+            order_id = None
+            try:
+                found = await self.by_client_order_id(client_id)
+                order_id = str(found.get("id") or "") or None
+            except Exception:
+                pass
+            await self.db.micro_orders.update_one(
+                {"client_order_id": client_id},
+                {"$set": {
+                    "status": "submission_unknown",
+                    "broker_order_id": order_id,
+                    "updated_at": now_iso(),
+                }},
+            )
+            raise StoreError("Order submission status is uncertain; manual broker reconciliation required") from exc
+        await self.db.micro_orders.update_one(
+            {"client_order_id": client_id},
+            {"$set": {
+                "status": "broker_accepted",
+                "broker_order_id": str(raw.get("id") or ""),
+                "updated_at": now_iso(),
+            }},
+        )
+        if not raw.get("id"):
+            raise StoreError("Broker accepted an order without an ID; manual reconciliation required")
         final = await self.await_order(str(raw["id"]))
         status = str(final.get("status") or "unknown").lower()
         requested_qty = float(final.get("qty") or payload.get("qty") or 0)
@@ -151,15 +203,15 @@ class LivePilotBroker:
         else:
             result["status"] = "review_required"
 
-        await self.db.micro_orders.insert_one({
-            "id": str(uuid.uuid4()),
-            "ts": now_iso(),
-            "intent": intent,
-            "symbol": symbol,
-            "notional": float(payload.get("notional") or 0),
-            "qty": float(payload.get("qty") or 0),
-            **result,
-        })
+        await self.db.micro_orders.update_one(
+            {"client_order_id": client_id},
+            {"$set": {
+                **result,
+                "status": result["status"],
+                "settled": result["status"] == "unfilled" and filled_qty == 0,
+                "updated_at": now_iso(),
+            }},
+        )
         return result
 
 
