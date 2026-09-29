@@ -285,10 +285,10 @@ async def manage_open_position(db, broker, settings, position, metrics, clock):
 
     managed_qty = float(position.get("qty") or 0)
     broker_qty = abs(float(raw.get("qty") or 0))
-    if managed_qty <= 0 or broker_qty + 1e-9 < managed_qty:
+    if managed_qty <= 0 or abs(broker_qty - managed_qty) > 1e-9 or str(raw.get("side") or "").lower() != "long":
         await db.micro_positions.update_one({"id": position["id"]}, {"$set": {
             "management_status": "review_required",
-            "review_reason": "Broker quantity is smaller than Petra managed quantity",
+            "review_reason": "Broker quantity or side differs from Petra managed position",
             "updated_at": now_iso(),
         }})
         raise StoreError("Micro-live broker quantity mismatch")
@@ -357,12 +357,21 @@ async def manage_open_position(db, broker, settings, position, metrics, clock):
         "closed_at": now_iso(),
         "updated_at": now_iso(),
     }})
+    await db.micro_orders.update_one(
+        {"client_order_id": result["client_order_id"]},
+        {"$set": {"settled": True, "updated_at": now_iso()}},
+    )
     return f"closed_{reason}"
 
 
 async def maybe_enter(db, broker, settings, snapshots, account, clock):
-    # Existing broker holdings in a pilot symbol must never be mixed with a new Petra lot.
-    broker_positions = {str(p.get("symbol")): p for p in await broker.positions()}
+    # Tiny pilot owns the entire connected brokerage account for execution purposes:
+    # a position or working order outside the ledger is a mandatory manual review.
+    broker_positions = await broker.positions()
+    broker_orders = await broker.open_orders()
+    if broker_positions or broker_orders:
+        log.warning("Broker contains holdings or working orders; no micro-live entry")
+        return "foreign_account_activity"
     managed_open = await db.micro_positions.find_one({"status": "open"}, {"_id": 0})
     if managed_open:
         return "position_exists"
@@ -372,10 +381,7 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
 
     metrics = []
     for symbol in settings.symbols:
-        if symbol in broker_positions:
-            log.warning("Skipping %s: funded account already holds it outside the micro-live position ledger", symbol)
-            continue
-        asset = await broker.asset(symbol)
+         asset = await broker.asset(symbol)
         if not asset.get("tradable") or not asset.get("fractionable"):
             continue
         m = _snapshot_metrics(symbol, snapshots.get(symbol) or {})
@@ -394,9 +400,6 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
     if not candidates:
         return "no_signal"
     chosen = max(candidates, key=lambda m: m["change_pct"])
-
-    if await _working_order_for_symbol(broker, chosen["symbol"]):
-        return "working_order"
 
     cash = float(account.get("cash") or 0)
     allocation_cap = cash * settings.max_allocation_pct / 100.0
@@ -450,6 +453,10 @@ async def maybe_enter(db, broker, settings, snapshots, account, clock):
             "from_open_pct": round(chosen["from_open_pct"], 4),
         },
     })
+    await db.micro_orders.update_one(
+        {"client_order_id": result["client_order_id"]},
+        {"$set": {"settled": True, "updated_at": now_iso()}},
+    )
     return "entry_filled"
 
 
@@ -463,6 +470,7 @@ async def main() -> int:
         await db.micro_runs.create_index("run_id", unique=True)
         await db.micro_positions.create_index("id", unique=True)
         await db.micro_positions.create_index([("status", 1), ("symbol", 1)])
+        await db.micro_orders.create_index("client_order_id", unique=True)
 
         async with Lease(store, owner=f"micro-{settings.run_id}", ttl_seconds=900):
             broker = LivePilotBroker(settings, db)
@@ -484,6 +492,10 @@ async def main() -> int:
             }
 
             open_pos = await db.micro_positions.find_one({"status": "open"}, {"_id": 0})
+            if await db.micro_positions.count_documents({"status": "open"}) > 1:
+                raise StoreError("Multiple managed live positions found; no action until reconciliation")
+            if await db.micro_orders.count_documents({"settled": {"$ne": True}}):
+                raise StoreError("Unsettled live order intent requires manual broker reconciliation")
             snapshots = await broker.snapshots(settings.symbols)
 
             realized = await _realized_today(db)
