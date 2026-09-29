@@ -93,6 +93,7 @@ class RiskConfig(BaseModel):
     max_risk_pct: float = 2.0
     max_daily_loss_pct: float = 2.0
     max_concurrent: int = 5
+    max_contracts: int = 10
     min_credit_width: float = 0.15
     target_delta: float = 0.22
     dte_min: int = 3

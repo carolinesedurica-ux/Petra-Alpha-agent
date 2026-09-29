@@ -33,7 +33,7 @@ jobs:
           ALPACA_MODE: "mock"
         run: python -c "import sys; sys.path.insert(0, 'backend'); import server; print('FastAPI import OK, mode=', server.alpaca.mode)"
       - name: Run backend safety tests
-        run: pytest backend/tests/test_strategy_demonstration.py backend/tests/test_worker_settings.py -q
+        run: pytest backend/tests/test_strategy_demonstration.py backend/tests/test_worker_settings.py backend/tests/test_live_pilot_settings.py -q
 
   frontend:
     name: Frontend production build
@@ -104,9 +104,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r backend/requirements-worker.txt pytest pytest-xdist
-      - name: Compile and import worker
+      - name: Compile and import workers
         run: |
-          python -m compileall -q backend/settings.py backend/store.py backend/worker.py
-          python -c "import sys; sys.path.insert(0, 'backend'); import worker; print('worker import OK')"
-      - name: Verify paper-only fail-closed settings
-        run: pytest backend/tests/test_worker_settings.py -q
+          python -m compileall -q backend/settings.py backend/store.py backend/worker.py backend/live_pilot_settings.py backend/live_pilot.py backend/configure_paper_entry_pilot.py
+          python -c "import sys; sys.path.insert(0, 'backend'); import worker, live_pilot; print('worker imports OK')"
+      - name: Verify paper and micro-live fail-closed settings
+        run: pytest backend/tests/test_worker_settings.py backend/tests/test_live_pilot_settings.py -q

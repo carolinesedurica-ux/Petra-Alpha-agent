@@ -72,7 +72,7 @@ def build_spread(alpaca, underlying, S, iv, spacing, verdict, cfg, equity):
 
     risk_budget = equity * (cfg["max_risk_pct"] / 100.0)
     contracts = max(0, int(risk_budget // max_loss_per))
-    contracts = min(contracts, 10)
+    contracts = min(contracts, max(1, int(cfg.get("max_contracts", 10))))
     if contracts < 1:
         contracts = 1  # allow 1 lot; risk gate will reject if it still breaches cap
 
