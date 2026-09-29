@@ -87,6 +87,22 @@ jobs:
               auth = client.get("/api/auth/status")
               print("auth", auth.status_code, auth.text)
               assert auth.status_code == 200
+              assert auth.json() == {"required": True, "authenticated": False}
+              # Pentest-style negative checks: hosted mock cannot expose or mutate
+              # operational endpoints merely because it is in demo mode.
+              assert client.get("/api/debug").status_code == 503
+              assert client.get("/api/account").status_code == 503
+              assert client.put("/api/config", json={"max_risk_pct": 99}).status_code == 503
+              assert client.post("/api/agent/tick").status_code == 503
+              cross = client.get("/api/health", headers={"Origin": "https://untrusted.example"})
+              assert cross.status_code == 200
+              assert "access-control-allow-origin" not in cross.headers
+              # With an operator token, debugging details must still be unavailable.
+              import server
+              server.OPERATOR_TOKEN = "ci-operator-placeholder"
+              assert client.get("/api/debug",
+                                headers={"Authorization": "Bearer ci-operator-placeholder"}).status_code == 404
+              print("hosted API auth, mutation-block, debug redaction, CORS checks passed")
           PY
 
 
