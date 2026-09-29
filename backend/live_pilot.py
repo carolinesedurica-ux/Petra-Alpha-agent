@@ -215,11 +215,23 @@ class LivePilotBroker:
         return result
 
 
-def _snapshot_metrics(symbol: str, snap: dict):
+def _snapshot_metrics(symbol: str, snap: dict, *, at=None):
     trade = snap.get("latestTrade") or {}
     daily = snap.get("dailyBar") or {}
     prev = snap.get("prevDailyBar") or {}
-    price = float(trade.get("p") or daily.get("c") or 0)
+    stamp = trade.get("t")
+    if not stamp:
+        return None  # A daily-bar close must not masquerade as a current executable quote.
+    try:
+        observed = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if observed.tzinfo is None:
+            return None
+        age = ((at or datetime.now(timezone.utc)) - observed.astimezone(timezone.utc)).total_seconds()
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not 0 <= age <= 180:
+        return None  # Refuse stale/future-dated IEX trade data.
+    price = float(trade.get("p") or 0)
     day_open = float(daily.get("o") or 0)
     prev_close = float(prev.get("c") or 0)
     if price <= 0 or day_open <= 0 or prev_close <= 0:
@@ -500,14 +512,22 @@ async def main() -> int:
 
             realized = await _realized_today(db)
             unrealized = 0.0
-            if open_pos:
+            if open_pos and clock.get("is_open"):
                 m = _snapshot_metrics(open_pos["symbol"], snapshots.get(open_pos["symbol"]) or {})
                 if not m:
-                    raise StoreError("No live IEX snapshot for managed micro-live position")
+                    raise StoreError("No fresh IEX trade for managed micro-live position; manual review required")
                 unrealized = round((m["price"] - float(open_pos["entry_price"])) * float(open_pos["qty"]), 4)
 
+            # Broker equity is a second, conservative daily-loss tripwire.
+            # Deposits/withdrawals can affect this difference; do not claim it is pure P&L.
+            last_equity = float(account.get("last_equity") or 0)
+            broker_day_delta = (round(float(account.get("equity") or 0) - last_equity, 4)
+                                if last_equity > 0 else None)
             day_pnl = round(realized + unrealized, 4)
+            if broker_day_delta is not None:
+                day_pnl = min(day_pnl, broker_day_delta)
             run["day_pnl"] = day_pnl
+            run["broker_day_delta_available"] = broker_day_delta is not None
 
             # Existing risk may still be exited even after the daily-loss stop. The stop only blocks entries.
             if open_pos:
@@ -519,7 +539,9 @@ async def main() -> int:
                     metrics = _snapshot_metrics(open_pos["symbol"], snapshots.get(open_pos["symbol"]) or {})
                     run["result"] = await manage_open_position(db, broker, settings, open_pos, metrics, clock)
             else:
-                if day_pnl <= -settings.daily_loss_usd:
+                if settings.can_submit and broker_day_delta is None:
+                    run["result"] = "day_equity_unavailable"
+                elif day_pnl <= -settings.daily_loss_usd:
                     run["result"] = "daily_loss_stop"
                 elif not clock.get("is_open"):
                     run["result"] = "market_closed"
