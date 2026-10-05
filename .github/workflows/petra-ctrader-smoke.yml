@@ -1,0 +1,45 @@
+name: Petra cTrader read-only smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: cTrader endpoint to verify
+        required: true
+        default: demo
+        type: choice
+        options:
+          - demo
+          - live
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: cTrader account link smoke
+    runs-on: ubuntu-latest
+    environment: ctrader-pilot
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install cTrader adapter dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+      - name: Run read-only broker smoke
+        working-directory: backend
+        env:
+          ALLOW_LIVE_TRADING: "false"
+          PETRA_CTRADER_ENV: ${{ inputs.host }}
+          PETRA_CTRADER_DRY_RUN: "true"
+          PETRA_CTRADER_PILOT_ARMED: "false"
+          PETRA_CTRADER_EXECUTION_CONFIRM: ""
+          CTRADER_CLIENT_ID: ${{ secrets.CTRADER_CLIENT_ID }}
+          CTRADER_CLIENT_SECRET: ${{ secrets.CTRADER_CLIENT_SECRET }}
+          CTRADER_ACCESS_TOKEN: ${{ secrets.CTRADER_ACCESS_TOKEN }}
+          CTRADER_EXPECTED_ACCOUNT_ID: ${{ secrets.CTRADER_EXPECTED_ACCOUNT_ID }}
+        run: python ctrader_smoke.py
