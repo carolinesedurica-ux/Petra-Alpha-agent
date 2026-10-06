@@ -53,13 +53,6 @@ settings = None
 client = None
 
 
-def _finish(code: int) -> None:
-    if reactor.running:
-        reactor.stop()
-    print(json.dumps(state.summary, sort_keys=True))
-    raise SystemExit(code)
-
-
 def _fail(message: str) -> None:
     if state.failed:
         return
@@ -98,9 +91,11 @@ def _send_read_only_checks() -> None:
     trader.ctidTraderAccountId = settings.expected_account_id
     _send(trader)
 
+    # Current cTrader Open API protobuf no longer exposes returnProtectionOrders
+    # on ProtoOAReconcileReq. Reconcile itself returns open positions and pending
+    # orders, which is all this read-only smoke test needs.
     reconcile = ProtoOAReconcileReq()
     reconcile.ctidTraderAccountId = settings.expected_account_id
-    reconcile.returnProtectionOrders = True
     _send(reconcile)
 
 
