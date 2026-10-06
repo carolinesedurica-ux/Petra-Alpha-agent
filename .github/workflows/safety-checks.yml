@@ -5,6 +5,7 @@ on:
     branches:
       - main
       - production-hardening-paper
+      - ctrader-broker-adapter
   pull_request:
     branches:
       - main
@@ -33,7 +34,7 @@ jobs:
           ALPACA_MODE: "mock"
         run: python -c "import sys; sys.path.insert(0, 'backend'); import server; print('FastAPI import OK, mode=', server.alpaca.mode)"
       - name: Run backend safety tests
-        run: pytest backend/tests/test_strategy_demonstration.py backend/tests/test_worker_settings.py backend/tests/test_live_pilot_settings.py -q
+        run: pytest backend/tests/test_strategy_demonstration.py backend/tests/test_worker_settings.py backend/tests/test_live_pilot_settings.py backend/tests/test_ctrader_settings.py -q
 
   frontend:
     name: Frontend production build
