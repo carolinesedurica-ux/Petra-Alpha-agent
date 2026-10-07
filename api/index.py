@@ -1,5 +1,8 @@
 import sys
 import os
+import json
+import hmac
+import subprocess
 import traceback
 from fastapi.responses import JSONResponse, HTMLResponse
 from starlette.requests import Request
@@ -17,13 +20,17 @@ def _as_bool(name: str, default: bool = False) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _operator_authorized(request: Request) -> bool:
+    token = (os.environ.get("PETRA_OPERATOR_TOKEN") or "").strip()
+    if not token:
+        return False
+    supplied = request.headers.get("authorization", "")
+    return hmac.compare_digest(supplied, f"Bearer {token}")
+
+
 @app.middleware("http")
 async def ctrader_runtime_status_middleware(request: Request, call_next):
-    """Expose a non-secret cTrader runtime readiness check for Petra.
-
-    This endpoint proves that Vercel received the intended demo configuration.
-    It deliberately does not contact cTrader or submit broker messages.
-    """
+    """Expose safe cTrader runtime checks and an authenticated read-only snapshot."""
     if request.method == "GET" and request.url.path == "/api/ctrader/status":
         provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
         environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
@@ -66,6 +73,104 @@ async def ctrader_runtime_status_middleware(request: Request, call_next):
                 "ready_for_read_only": ready_for_read_only,
                 "execution_enabled": False,
             },
+        )
+
+    if request.method == "GET" and request.url.path == "/api/ctrader/snapshot":
+        if not _operator_authorized(request):
+            return JSONResponse(
+                status_code=401,
+                headers={"Cache-Control": "no-store, max-age=0"},
+                content={"detail": "operator authentication required"},
+            )
+
+        provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
+        environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
+        dry_run = _as_bool("PETRA_CTRADER_DRY_RUN", True)
+        armed = _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
+        generic_live = _as_bool("ALLOW_LIVE_TRADING", False)
+
+        if not (
+            provider == "ctrader"
+            and environment == "demo"
+            and dry_run
+            and not armed
+            and not generic_live
+        ):
+            return JSONResponse(
+                status_code=503,
+                headers={"Cache-Control": "no-store, max-age=0"},
+                content={
+                    "service": "Petra Alpha Agent",
+                    "broker": "ctrader",
+                    "mode": "read_only",
+                    "status": "blocked",
+                    "execution_enabled": False,
+                    "error": "cTrader snapshot safety gate is not satisfied",
+                },
+            )
+
+        script = os.path.join(
+            os.path.dirname(__file__), "..", "backend", "ctrader_snapshot.py"
+        )
+        try:
+            completed = subprocess.run(
+                [sys.executable, script],
+                capture_output=True,
+                text=True,
+                timeout=40,
+                env=os.environ.copy(),
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return JSONResponse(
+                status_code=504,
+                headers={"Cache-Control": "no-store, max-age=0"},
+                content={
+                    "service": "Petra Alpha Agent",
+                    "broker": "ctrader",
+                    "mode": "read_only",
+                    "status": "error",
+                    "execution_enabled": False,
+                    "error": "cTrader snapshot timed out",
+                },
+            )
+
+        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+        if not lines:
+            return JSONResponse(
+                status_code=502,
+                headers={"Cache-Control": "no-store, max-age=0"},
+                content={
+                    "service": "Petra Alpha Agent",
+                    "broker": "ctrader",
+                    "mode": "read_only",
+                    "status": "error",
+                    "execution_enabled": False,
+                    "error": "cTrader snapshot returned no data",
+                },
+            )
+
+        try:
+            payload = json.loads(lines[-1])
+        except json.JSONDecodeError:
+            return JSONResponse(
+                status_code=502,
+                headers={"Cache-Control": "no-store, max-age=0"},
+                content={
+                    "service": "Petra Alpha Agent",
+                    "broker": "ctrader",
+                    "mode": "read_only",
+                    "status": "error",
+                    "execution_enabled": False,
+                    "error": "cTrader snapshot returned invalid data",
+                },
+            )
+
+        status_code = 200 if completed.returncode == 0 and payload.get("status") == "ok" else 502
+        return JSONResponse(
+            status_code=status_code,
+            headers={"Cache-Control": "no-store, max-age=0"},
+            content=payload,
         )
 
     return await call_next(request)
