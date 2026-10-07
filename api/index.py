@@ -10,6 +10,67 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 from server import app  # noqa: F401
 
 
+def _as_bool(name: str, default: bool = False) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+@app.middleware("http")
+async def ctrader_runtime_status_middleware(request: Request, call_next):
+    """Expose a non-secret cTrader runtime readiness check for Petra.
+
+    This endpoint proves that Vercel received the intended demo configuration.
+    It deliberately does not contact cTrader or submit broker messages.
+    """
+    if request.method == "GET" and request.url.path == "/api/ctrader/status":
+        provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
+        environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
+        expected_account_id = (os.environ.get("CTRADER_EXPECTED_ACCOUNT_ID") or "").strip()
+        has_client_id = bool((os.environ.get("CTRADER_CLIENT_ID") or "").strip())
+        has_client_secret = bool((os.environ.get("CTRADER_CLIENT_SECRET") or "").strip())
+        has_access_token = bool((os.environ.get("CTRADER_ACCESS_TOKEN") or "").strip())
+        dry_run = _as_bool("PETRA_CTRADER_DRY_RUN", True)
+        armed = _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
+        generic_live = _as_bool("ALLOW_LIVE_TRADING", False)
+
+        ready_for_read_only = (
+            provider == "ctrader"
+            and environment == "demo"
+            and bool(expected_account_id)
+            and has_client_id
+            and has_client_secret
+            and has_access_token
+            and dry_run
+            and not armed
+            and not generic_live
+        )
+
+        return JSONResponse(
+            status_code=200,
+            headers={"Cache-Control": "no-store, max-age=0"},
+            content={
+                "service": "Petra Alpha Agent",
+                "broker_provider": provider,
+                "ctrader_environment": environment,
+                "expected_account_id": expected_account_id or None,
+                "credentials_present": {
+                    "client_id": has_client_id,
+                    "client_secret": has_client_secret,
+                    "access_token": has_access_token,
+                },
+                "dry_run": dry_run,
+                "pilot_armed": armed,
+                "allow_live_trading": generic_live,
+                "ready_for_read_only": ready_for_read_only,
+                "execution_enabled": False,
+            },
+        )
+
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def ctrader_oauth_callback_middleware(request: Request, call_next):
     """Public OAuth landing endpoint for cTrader.
