@@ -24,6 +24,8 @@ http.interceptors.request.use((config) => {
 });
 
 export const getAuthStatus = () => http.get("/auth/status").then((r) => r.data);
+export const getCTraderStatus = () => http.get("/ctrader/status").then((r) => r.data);
+export const getCTraderSnapshot = () => http.get("/ctrader/snapshot").then((r) => r.data);
 
 export const getAccount = () => http.get("/account").then((r) => r.data);
 export const getPositions = () => http.get("/positions").then((r) => r.data);
