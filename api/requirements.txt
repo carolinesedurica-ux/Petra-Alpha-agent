@@ -10,3 +10,5 @@ openai>=1.50.0
 mongomock>=4.3.0
 mongomock-motor>=0.0.36
 tzdata>=2024.1
+ctrader-open-api>=0.9.2
+service_identity>=24.1.0
