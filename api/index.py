@@ -4,6 +4,7 @@ import json
 import hmac
 import subprocess
 import traceback
+import httpx
 from fastapi.responses import JSONResponse, HTMLResponse
 from starlette.requests import Request
 
@@ -109,34 +110,29 @@ async def ctrader_runtime_status_middleware(request: Request, call_next):
                 },
             )
 
-        script = os.path.join(
-            os.path.dirname(__file__), "..", "backend", "ctrader_snapshot.py"
-        )
-        try:
-            completed = subprocess.run(
-                [sys.executable, script],
-                capture_output=True,
-                text=True,
-                timeout=40,
-                env=os.environ.copy(),
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
+        render_url = (os.environ.get("PETRA_CTRADER_RENDER_URL") or "").strip().rstrip("/")
+        bridge_token = (os.environ.get("PETRA_RENDER_BRIDGE_TOKEN") or "").strip()
+        if not render_url or not bridge_token:
             return JSONResponse(
-                status_code=504,
+                status_code=503,
                 headers={"Cache-Control": "no-store, max-age=0"},
                 content={
                     "service": "Petra Alpha Agent",
                     "broker": "ctrader",
                     "mode": "read_only",
-                    "status": "error",
+                    "status": "blocked",
                     "execution_enabled": False,
-                    "error": "cTrader snapshot timed out",
+                    "error": "Render cTrader bridge is not configured",
                 },
             )
 
-        lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-        if not lines:
+        try:
+            async with httpx.AsyncClient(timeout=45.0) as client:
+                response = await client.get(
+                    f"{render_url}/api/ctrader/snapshot",
+                    headers={"Authorization": f"Bearer {bridge_token}"},
+                )
+        except httpx.HTTPError as exc:
             return JSONResponse(
                 status_code=502,
                 headers={"Cache-Control": "no-store, max-age=0"},
@@ -146,29 +142,26 @@ async def ctrader_runtime_status_middleware(request: Request, call_next):
                     "mode": "read_only",
                     "status": "error",
                     "execution_enabled": False,
-                    "error": "cTrader snapshot returned no data",
+                    "error": f"Render bridge request failed: {type(exc).__name__}",
                 },
             )
 
         try:
-            payload = json.loads(lines[-1])
-        except json.JSONDecodeError:
-            return JSONResponse(
-                status_code=502,
-                headers={"Cache-Control": "no-store, max-age=0"},
-                content={
-                    "service": "Petra Alpha Agent",
-                    "broker": "ctrader",
-                    "mode": "read_only",
-                    "status": "error",
-                    "execution_enabled": False,
-                    "error": "cTrader snapshot returned invalid data",
-                },
-            )
+            payload = response.json()
+        except ValueError:
+            payload = {
+                "service": "Petra Alpha Agent",
+                "broker": "ctrader",
+                "mode": "read_only",
+                "status": "error",
+                "execution_enabled": False,
+                "error": "Render bridge returned invalid data",
+            }
 
-        status_code = 200 if completed.returncode == 0 and payload.get("status") == "ok" else 502
+        payload["proxied_via"] = "vercel"
+        payload["execution_enabled"] = False
         return JSONResponse(
-            status_code=status_code,
+            status_code=response.status_code,
             headers={"Cache-Control": "no-store, max-age=0"},
             content=payload,
         )
