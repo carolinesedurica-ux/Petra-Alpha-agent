@@ -20,6 +20,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAAccountAuthRes,
     ProtoOAApplicationAuthReq,
     ProtoOAApplicationAuthRes,
+    ProtoOAErrorRes,
     ProtoOAGetAccountListByAccessTokenReq,
     ProtoOAGetAccountListByAccessTokenRes,
     ProtoOAReconcileReq,
@@ -91,9 +92,6 @@ def _send_read_only_checks() -> None:
     trader.ctidTraderAccountId = settings.expected_account_id
     _send(trader)
 
-    # Current cTrader Open API protobuf no longer exposes returnProtectionOrders
-    # on ProtoOAReconcileReq. Reconcile itself returns open positions and pending
-    # orders, which is all this read-only smoke test needs.
     reconcile = ProtoOAReconcileReq()
     reconcile.ctidTraderAccountId = settings.expected_account_id
     _send(reconcile)
@@ -109,6 +107,13 @@ def _maybe_done() -> None:
 def _on_message(_client, message) -> None:
     try:
         payload_type = message.payloadType
+
+        if payload_type == ProtoOAErrorRes().payloadType:
+            response = Protobuf.extract(message)
+            code = str(getattr(response, "errorCode", "") or "UNKNOWN")
+            description = str(getattr(response, "description", "") or "")
+            _fail(f"cTrader API error {code}: {description}".rstrip())
+            return
 
         if payload_type == ProtoOAApplicationAuthRes().payloadType:
             log.info("cTrader application authenticated")
@@ -160,12 +165,16 @@ def _on_message(_client, message) -> None:
             _maybe_done()
             return
 
-    except Exception as exc:  # fail closed on unexpected broker payloads
+        # Do not log message bodies because they may contain sensitive account data.
+        log.info("Received unhandled cTrader payload type %s", payload_type)
+
+    except Exception as exc:
         _fail(f"cTrader smoke parser failed: {type(exc).__name__}: {exc}")
 
 
 def _connected(_client) -> None:
     log.info("Connected to cTrader %s endpoint", settings.environment)
+    log.info("Sending cTrader application authentication request")
     request = ProtoOAApplicationAuthReq()
     request.clientId = settings.client_id
     request.clientSecret = settings.client_secret
