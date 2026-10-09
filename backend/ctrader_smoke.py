@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from typing import Any
 
@@ -165,7 +166,6 @@ def _on_message(_client, message) -> None:
             _maybe_done()
             return
 
-        # Do not log message bodies because they may contain sensitive account data.
         log.info("Received unhandled cTrader payload type %s", payload_type)
 
     except Exception as exc:
@@ -185,6 +185,17 @@ def _disconnected(_client, reason) -> None:
     if not state.failed and not (state.trader_received and state.reconcile_received):
         text = getattr(reason, "getErrorMessage", lambda: str(reason))()
         _fail(f"cTrader disconnected before smoke test completed: {text}")
+
+
+def _start_render_api_if_enabled() -> None:
+    if (os.environ.get("PETRA_RUN_API") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    port = (os.environ.get("PORT") or "10000").strip()
+    log.info("Smoke test passed; starting Petra Render read-only API on port %s", port)
+    os.execv(
+        sys.executable,
+        [sys.executable, "-m", "uvicorn", "render_api:app", "--host", "0.0.0.0", "--port", port],
+    )
 
 
 def main() -> int:
@@ -210,7 +221,11 @@ def main() -> int:
     reactor.run()
 
     print(json.dumps(state.summary, sort_keys=True))
-    return 1 if state.failed else 0
+    if state.failed:
+        return 1
+
+    _start_render_api_if_enabled()
+    return 0
 
 
 if __name__ == "__main__":
