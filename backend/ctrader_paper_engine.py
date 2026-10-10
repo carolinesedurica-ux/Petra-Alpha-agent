@@ -16,9 +16,22 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent
 STATE_FILE = Path(os.environ.get("PETRA_CTRADER_PAPER_STATE_FILE") or "/tmp/petra_ctrader_paper_state.json")
-STARTING_BALANCE = float(os.environ.get("PETRA_CTRADER_PAPER_STARTING_BALANCE") or "1000")
+PROFILE_ID = (os.environ.get("PETRA_CTRADER_PAPER_PROFILE_ID") or "usd100-min10-v1").strip()
+STARTING_BALANCE = float(os.environ.get("PETRA_CTRADER_PAPER_STARTING_BALANCE") or "100")
 MAX_RISK_PCT = max(0.05, min(2.0, float(os.environ.get("PETRA_CTRADER_PAPER_RISK_PCT") or "0.50")))
-MAX_POSITION_NOTIONAL = max(1.0, float(os.environ.get("PETRA_CTRADER_PAPER_MAX_NOTIONAL") or "25"))
+MIN_POSITION_NOTIONAL = max(1.0, float(os.environ.get("PETRA_CTRADER_PAPER_MIN_NOTIONAL") or "10"))
+MAX_POSITION_NOTIONAL = max(MIN_POSITION_NOTIONAL, float(os.environ.get("PETRA_CTRADER_PAPER_MAX_NOTIONAL") or "25"))
+
+
+def _profile() -> dict[str, Any]:
+    return {
+        "profile_id": PROFILE_ID,
+        "starting_balance": round(STARTING_BALANCE, 2),
+        "risk_pct": round(MAX_RISK_PCT, 3),
+        "min_order_notional_usd": round(MIN_POSITION_NOTIONAL, 2),
+        "max_order_notional_usd": round(MAX_POSITION_NOTIONAL, 2),
+        "live_execution": False,
+    }
 
 
 def _run_analysis() -> dict[str, Any]:
@@ -42,6 +55,7 @@ def _run_analysis() -> dict[str, Any]:
 def _default_state() -> dict[str, Any]:
     return {
         "mode": "ctrader_paper_autonomous",
+        "profile_id": PROFILE_ID,
         "balance": STARTING_BALANCE,
         "equity": STARTING_BALANCE,
         "realized_pnl": 0.0,
@@ -61,6 +75,16 @@ def _load_state() -> dict[str, Any]:
             data = json.loads(STATE_FILE.read_text())
             if isinstance(data, dict):
                 data.setdefault("trade_history", [])
+                if data.get("profile_id") != PROFILE_ID:
+                    if data.get("position"):
+                        data["pending_profile_reset"] = True
+                        data["target_profile_id"] = PROFILE_ID
+                        return data
+                    fresh = _default_state()
+                    fresh["trade_history"] = list(data.get("trade_history") or [])[:20]
+                    fresh["last_action"] = "PROFILE_RESET"
+                    fresh["last_reason"] = "Applied new $100 paper-capital profile"
+                    return fresh
                 return data
     except Exception:
         pass
@@ -92,6 +116,7 @@ def _close_position(state: dict[str, Any], price: float, reason: str) -> None:
         "entry_price": entry,
         "exit_price": price,
         "quantity": qty,
+        "notional_usd": pos.get("notional_usd"),
         "pnl": round(pnl, 6),
         "reason": reason,
         "opened_at": pos.get("opened_at"),
@@ -104,22 +129,43 @@ def _close_position(state: dict[str, Any], price: float, reason: str) -> None:
     state["position"] = None
 
 
+def _apply_pending_profile_reset(state: dict[str, Any]) -> dict[str, Any]:
+    if not state.get("pending_profile_reset") or state.get("position"):
+        return state
+    history = list(state.get("trade_history") or [])[:20]
+    fresh = _default_state()
+    fresh["trade_history"] = history
+    fresh["last_action"] = "PROFILE_RESET"
+    fresh["last_reason"] = "Applied $100 paper-capital profile after prior paper position closed"
+    return fresh
+
+
 def _open_position(state: dict[str, Any], analysis: dict[str, Any], direction: str) -> None:
     signal = analysis["analysis"]
     price = float(signal["price"])
     stop = float(signal["suggested_stop_loss"])
     target = float(signal["suggested_take_profit"])
     stop_distance = abs(price - stop)
-    if stop_distance <= 0:
+    if stop_distance <= 0 or price <= 0:
         state["last_action"] = "NO_ACTION"
-        state["last_reason"] = "Invalid stop distance"
+        state["last_reason"] = "Invalid paper price or stop distance"
         return
 
     balance = float(state.get("balance", STARTING_BALANCE))
     risk_budget = max(0.01, balance * (MAX_RISK_PCT / 100.0))
     risk_qty = risk_budget / stop_distance
-    notional_qty = MAX_POSITION_NOTIONAL / price if price > 0 else 0.0
-    qty = max(0.0, min(risk_qty, notional_qty))
+    risk_limited_notional = max(0.0, risk_qty * price)
+
+    if risk_limited_notional < MIN_POSITION_NOTIONAL:
+        state["last_action"] = "NO_ACTION"
+        state["last_reason"] = (
+            f"Safe risk capacity ${risk_limited_notional:.2f} is below the "
+            f"${MIN_POSITION_NOTIONAL:.2f} minimum paper order; trade skipped"
+        )
+        return
+
+    selected_notional = min(MAX_POSITION_NOTIONAL, risk_limited_notional)
+    qty = selected_notional / price
     if qty <= 0:
         state["last_action"] = "NO_ACTION"
         state["last_reason"] = "Calculated paper quantity is zero"
@@ -129,6 +175,8 @@ def _open_position(state: dict[str, Any], analysis: dict[str, Any], direction: s
         "side": direction,
         "entry_price": price,
         "quantity": round(qty, 8),
+        "notional_usd": round(selected_notional, 2),
+        "risk_budget_usd": round(risk_budget, 4),
         "stop_loss": stop,
         "take_profit": target,
         "opened_at": datetime.now(timezone.utc).isoformat(),
@@ -209,6 +257,8 @@ def run_cycle() -> dict[str, Any]:
             state["last_action"] = "HOLD"
             state["last_reason"] = "Existing paper position retained"
 
+    state = _apply_pending_profile_reset(state)
+
     if state.get("position") is None and bool(analysis.get("shadow_actionable")):
         direction = str(analysis.get("final_decision") or "NO_TRADE")
         if direction in {"BUY", "SELL"}:
@@ -234,6 +284,7 @@ def run_cycle() -> dict[str, Any]:
     state["market_price"] = analysis.get("market_price") or price
     state["market_updated_at"] = analysis.get("market_updated_at")
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state["profile_id"] = PROFILE_ID
     _save_state(state)
 
     candles = _decorate_candles(analysis.get("candles") or [], state)
@@ -243,6 +294,7 @@ def run_cycle() -> dict[str, Any]:
         "mode": "ctrader_paper_autonomous",
         "orders_enabled": False,
         "broker_execution": False,
+        "paper_profile": _profile(),
         "analysis_decision": decision,
         "analysis_confidence": confidence,
         "final_decision": analysis.get("final_decision"),
