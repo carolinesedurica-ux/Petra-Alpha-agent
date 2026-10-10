@@ -44,6 +44,7 @@ const actionTone = (action = "") => {
 export const CTraderReadOnlyDashboard = ({ status, snapshot, loading, error, onRefresh }) => {
   const [now, setNow] = useState(Date.now());
   const paper = status?.last_paper_cycle || {};
+  const profile = paper?.paper_profile || {};
   const interval = Number(status?.paper_interval_seconds || 300);
   const position = paper?.position || null;
   const analysisDecision = paper?.analysis_decision || "WAITING";
@@ -59,6 +60,15 @@ export const CTraderReadOnlyDashboard = ({ status, snapshot, loading, error, onR
   const countdown = secondsToNext == null
     ? "—"
     : `${String(Math.floor(secondsToNext / 60)).padStart(2, "0")}:${String(secondsToNext % 60).padStart(2, "0")}`;
+
+  const modelCapital = Number(profile?.starting_balance ?? paper?.balance);
+  const minNotional = Number(profile?.min_order_notional_usd);
+  const maxNotional = Number(profile?.max_order_notional_usd);
+  const riskPct = Number(profile?.risk_pct);
+  const activeNotional = Number(position?.notional_usd ?? (Number(position?.entry_price) * Number(position?.quantity)));
+  const estimatedRisk = position
+    ? Math.abs(Number(position.entry_price) - Number(position.stop_loss)) * Number(position.quantity)
+    : NaN;
 
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), 1000);
@@ -171,13 +181,29 @@ export const CTraderReadOnlyDashboard = ({ status, snapshot, loading, error, onR
             <div className="p-5 border-b xl:border-b-0 xl:border-r border-[var(--border)]">
               <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-500">Paper balance</div>
               <div className="mt-2 text-2xl font-mono font-bold text-slate-100">{money(paper?.balance)}</div>
-              <div className="text-xs font-mono text-slate-500 mt-1">Starting simulation capital</div>
+              <div className="text-xs font-mono text-slate-500 mt-1">$100 model account</div>
             </div>
             <div className="p-5">
               <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-500">Paper equity</div>
               <div className={`mt-2 text-2xl font-mono font-bold ${pnlTone(Number(paper?.equity) - Number(paper?.balance))}`}>{money(paper?.equity)}</div>
               <div className="text-xs font-mono text-slate-500 mt-1">Mark-to-model equity</div>
             </div>
+          </div>
+
+          <div className="p-5 border-b border-[var(--border)] bg-[#08111a]">
+            <div className="flex items-center gap-2 mb-3">
+              <ShieldCheck size={14} className="text-[#00F0B5]" />
+              <div className="text-[10px] font-mono uppercase tracking-[0.18em] text-slate-400">$100 Paper Risk Profile</div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3 font-mono text-sm">
+              <div className="term-well p-3"><div className="text-[10px] text-slate-500">MODEL CAPITAL</div><div className="mt-1 text-slate-100 font-bold">{money(modelCapital)}</div></div>
+              <div className="term-well p-3"><div className="text-[10px] text-slate-500">MIN ORDER</div><div className="mt-1 text-[#00F0B5] font-bold">{money(minNotional)}</div></div>
+              <div className="term-well p-3"><div className="text-[10px] text-slate-500">MAX ORDER</div><div className="mt-1 text-slate-100 font-bold">{money(maxNotional)}</div></div>
+              <div className="term-well p-3"><div className="text-[10px] text-slate-500">RISK BUDGET</div><div className="mt-1 text-[#FFB800] font-bold">{Number.isFinite(riskPct) ? `${riskPct.toFixed(2)}%` : "—"}</div></div>
+              <div className="term-well p-3"><div className="text-[10px] text-slate-500">ACTIVE NOTIONAL</div><div className="mt-1 text-slate-100 font-bold">{money(activeNotional)}</div></div>
+              <div className="term-well p-3"><div className="text-[10px] text-slate-500">RISK TO STOP</div><div className="mt-1 text-[#FF6B8A] font-bold">{money(estimatedRisk)}</div></div>
+            </div>
+            <div className="mt-3 text-[10px] font-mono text-slate-500">Petra skips a setup when the risk-safe capacity cannot support at least a $10 simulated position.</div>
           </div>
 
           <div className="p-5 border-b border-[var(--border)]">
