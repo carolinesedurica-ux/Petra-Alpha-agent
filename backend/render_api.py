@@ -1,7 +1,8 @@
-"""Render-only read-only cTrader bridge for Petra.
+"""Render-only cTrader bridge for Petra.
 
-Exposes safe account telemetry to Petra's Vercel frontend through a private
-server-to-server bridge token. No order submission endpoints exist here.
+Exposes safe cTrader account telemetry and autonomous shadow analysis to Petra's
+Vercel frontend through a private server-to-server bridge token. No order
+submission endpoints exist here.
 """
 from __future__ import annotations
 
@@ -65,6 +66,49 @@ def _safe_gate() -> tuple[bool, dict]:
     }
 
 
+def _run_json_script(script_name: str, timeout: int) -> tuple[int, dict]:
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / script_name)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=os.environ.copy(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return 504, {
+            "broker": "ctrader",
+            "status": "error",
+            "execution_enabled": False,
+            "error": f"{script_name} timed out on Render",
+        }
+
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        return 502, {
+            "broker": "ctrader",
+            "status": "error",
+            "execution_enabled": False,
+            "error": f"{script_name} returned no data on Render",
+        }
+
+    try:
+        payload = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return 502, {
+            "broker": "ctrader",
+            "status": "error",
+            "execution_enabled": False,
+            "error": f"{script_name} returned invalid data on Render",
+        }
+
+    ok = completed.returncode == 0 and payload.get("status") == "ok"
+    payload["source"] = "render"
+    payload["execution_enabled"] = False
+    return (200 if ok else 502), payload
+
+
 @app.get("/")
 async def root():
     ready, _ = _safe_gate()
@@ -105,58 +149,32 @@ async def ctrader_snapshot(authorization: str | None = Header(default=None)):
             },
         )
 
-    try:
-        completed = subprocess.run(
-            [sys.executable, str(ROOT / "ctrader_snapshot.py")],
-            capture_output=True,
-            text=True,
-            timeout=40,
-            env=os.environ.copy(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+    status_code, payload = _run_json_script("ctrader_snapshot.py", 40)
+    return JSONResponse(status_code=status_code, headers={"Cache-Control": "no-store"}, content=payload)
+
+
+@app.get("/api/ctrader/analysis")
+async def ctrader_analysis(authorization: str | None = Header(default=None)):
+    """Run Petra's real-market US500 autonomous analysis in shadow mode only."""
+    if not _bridge_authorized(authorization):
+        raise HTTPException(status_code=401, detail="bridge authentication required")
+
+    ready, _ = _safe_gate()
+    if not ready:
         return JSONResponse(
-            status_code=504,
+            status_code=503,
             headers={"Cache-Control": "no-store"},
             content={
+                "service": "Petra Alpha Agent",
                 "broker": "ctrader",
-                "mode": "read_only",
-                "status": "error",
+                "mode": "autonomous_shadow_analysis",
+                "status": "blocked",
                 "execution_enabled": False,
-                "error": "cTrader snapshot timed out on Render",
+                "error": "cTrader autonomous analysis requires demo dry-run safety gates",
             },
         )
 
-    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-    if not lines:
-        return JSONResponse(
-            status_code=502,
-            headers={"Cache-Control": "no-store"},
-            content={
-                "broker": "ctrader",
-                "mode": "read_only",
-                "status": "error",
-                "execution_enabled": False,
-                "error": "cTrader snapshot returned no data on Render",
-            },
-        )
-
-    try:
-        payload = json.loads(lines[-1])
-    except json.JSONDecodeError:
-        return JSONResponse(
-            status_code=502,
-            headers={"Cache-Control": "no-store"},
-            content={
-                "broker": "ctrader",
-                "mode": "read_only",
-                "status": "error",
-                "execution_enabled": False,
-                "error": "cTrader snapshot returned invalid data on Render",
-            },
-        )
-
-    status_code = 200 if completed.returncode == 0 and payload.get("status") == "ok" else 502
-    payload["source"] = "render"
+    status_code, payload = _run_json_script("ctrader_autonomous_bridge.py", 55)
     payload["execution_enabled"] = False
+    payload["orders_enabled"] = False
     return JSONResponse(status_code=status_code, headers={"Cache-Control": "no-store"}, content=payload)
