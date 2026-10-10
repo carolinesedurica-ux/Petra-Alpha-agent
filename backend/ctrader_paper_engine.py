@@ -10,7 +10,6 @@ import json
 import os
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -181,6 +180,8 @@ def run_cycle() -> dict[str, Any]:
     state["analysis_confidence"] = confidence
     state["broker_account_id"] = analysis.get("account_id")
     state["broker_symbol"] = analysis.get("broker_symbol")
+    state["market_price"] = analysis.get("market_price") or price
+    state["market_updated_at"] = analysis.get("market_updated_at")
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     _save_state(state)
 
@@ -190,6 +191,7 @@ def run_cycle() -> dict[str, Any]:
         "orders_enabled": False,
         "broker_execution": False,
         "analysis_decision": decision,
+        "analysis_confidence": confidence,
         "final_decision": analysis.get("final_decision"),
         "shadow_actionable": analysis.get("shadow_actionable"),
         "last_action": state.get("last_action"),
@@ -202,6 +204,11 @@ def run_cycle() -> dict[str, Any]:
         "losses": state.get("losses"),
         "cycles": state.get("cycles"),
         "position": state.get("position"),
+        "market_price": analysis.get("market_price") or price,
+        "market_updated_at": analysis.get("market_updated_at"),
+        "bar_period": analysis.get("bar_period") or "M5",
+        "candles": analysis.get("candles") or [],
+        "updated_at": state.get("updated_at"),
     }
 
 
