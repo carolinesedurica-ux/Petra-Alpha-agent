@@ -53,6 +53,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 TARGET_SYMBOL = (os.environ.get("PETRA_CTRADER_AUTONOMOUS_SYMBOL") or "US500").strip()
 BAR_COUNT = max(40, min(120, int(os.environ.get("PETRA_CTRADER_BAR_COUNT") or "72")))
 CONFIDENCE_FLOOR = max(0.50, min(0.90, float(os.environ.get("PETRA_CTRADER_CONFIDENCE_FLOOR") or "0.68")))
+UI_CANDLE_COUNT = max(24, min(72, int(os.environ.get("PETRA_CTRADER_UI_CANDLE_COUNT") or "48")))
 
 
 def _norm(value: str) -> str:
@@ -389,6 +390,21 @@ def _on_message(_client, message) -> None:
             final_decision = analysis["decision"] if actionable else "NO_TRADE"
             if analysis["decision"] != "NO_TRADE" and not actionable:
                 analysis["reason"] += " Risk/account gate blocked new exposure."
+
+            ui_bars = bars[-UI_CANDLE_COUNT:]
+            candles = [
+                {
+                    "time": int(bar["ts_minutes"]) * 60,
+                    "open": round(float(bar["open"]), 5),
+                    "high": round(float(bar["high"]), 5),
+                    "low": round(float(bar["low"]), 5),
+                    "close": round(float(bar["close"]), 5),
+                    "volume": round(float(bar["volume"]), 2),
+                }
+                for bar in ui_bars
+            ]
+            market_updated_at = candles[-1]["time"] if candles else None
+
             state.summary.update({
                 "status": "ok",
                 "authenticated": True,
@@ -405,6 +421,9 @@ def _on_message(_client, message) -> None:
                 "analysis": analysis,
                 "final_decision": final_decision,
                 "shadow_actionable": actionable,
+                "market_price": analysis.get("price"),
+                "market_updated_at": market_updated_at,
+                "candles": candles,
                 "execution_enabled": False,
                 "orders_enabled": False,
             })
