@@ -1,0 +1,130 @@
+import { useMemo } from "react";
+
+const fmt = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : "—";
+};
+
+const timeLabel = (seconds) => {
+  const n = Number(seconds);
+  if (!Number.isFinite(n)) return "—";
+  return new Date(n * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+};
+
+export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, barPeriod = "M5", updatedAt }) => {
+  const chart = useMemo(() => {
+    const valid = (candles || []).filter((c) =>
+      [c?.open, c?.high, c?.low, c?.close].every((v) => Number.isFinite(Number(v)))
+    );
+    if (!valid.length) return null;
+
+    const overlay = [position?.entry_price, position?.stop_loss, position?.take_profit, marketPrice]
+      .map(Number)
+      .filter(Number.isFinite);
+    const lows = valid.map((c) => Number(c.low));
+    const highs = valid.map((c) => Number(c.high));
+    const rawMin = Math.min(...lows, ...overlay);
+    const rawMax = Math.max(...highs, ...overlay);
+    const span = Math.max(rawMax - rawMin, rawMax * 0.0005, 1);
+    const min = rawMin - span * 0.08;
+    const max = rawMax + span * 0.08;
+
+    return { valid, min, max };
+  }, [candles, marketPrice, position?.entry_price, position?.stop_loss, position?.take_profit]);
+
+  if (!chart) {
+    return (
+      <div className="term-well h-[320px] flex items-center justify-center text-sm font-mono text-slate-500">
+        Waiting for cTrader {barPeriod} candles…
+      </div>
+    );
+  }
+
+  const W = 1000;
+  const H = 340;
+  const left = 26;
+  const right = 84;
+  const top = 24;
+  const bottom = 38;
+  const plotW = W - left - right;
+  const plotH = H - top - bottom;
+  const y = (price) => top + ((chart.max - Number(price)) / (chart.max - chart.min)) * plotH;
+  const step = plotW / chart.valid.length;
+  const bodyW = Math.max(3, Math.min(12, step * 0.58));
+
+  const levels = [
+    { label: "MARK", value: marketPrice, stroke: "#94a3b8" },
+    { label: "ENTRY", value: position?.entry_price, stroke: "#38bdf8" },
+    { label: "SL", value: position?.stop_loss, stroke: "#fb7185" },
+    { label: "TP", value: position?.take_profit, stroke: "#34d399" },
+  ].filter((l) => Number.isFinite(Number(l.value)));
+
+  const gridPrices = Array.from({ length: 5 }, (_, i) => chart.max - ((chart.max - chart.min) * i) / 4);
+
+  return (
+    <div className="term-well overflow-hidden">
+      <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="font-mono text-xs text-slate-200">US500 · {barPeriod} CANDLES</div>
+          <div className="font-mono text-[10px] text-slate-500 mt-1">Same cTrader bars used by Petra's decision engine</div>
+        </div>
+        <div className="font-mono text-xs text-slate-400 flex gap-4">
+          <span>MARK <span className="text-slate-100">{fmt(marketPrice)}</span></span>
+          <span>UPDATED <span className="text-slate-100">{timeLabel(updatedAt)}</span></span>
+        </div>
+      </div>
+      <div className="w-full overflow-x-auto">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[760px] h-auto block" role="img" aria-label="US500 cTrader candlestick chart">
+          <rect x="0" y="0" width={W} height={H} fill="#090e16" />
+
+          {gridPrices.map((price, i) => {
+            const gy = y(price);
+            return (
+              <g key={`grid-${i}`}>
+                <line x1={left} x2={W - right} y1={gy} y2={gy} stroke="rgba(148,163,184,0.10)" strokeWidth="1" />
+                <text x={W - right + 8} y={gy + 4} fill="#64748b" fontSize="11" fontFamily="monospace">{fmt(price)}</text>
+              </g>
+            );
+          })}
+
+          {chart.valid.map((c, i) => {
+            const cx = left + step * i + step / 2;
+            const o = Number(c.open);
+            const h = Number(c.high);
+            const l = Number(c.low);
+            const cl = Number(c.close);
+            const up = cl >= o;
+            const color = up ? "#00F0B5" : "#FF5D7D";
+            const bodyTop = y(Math.max(o, cl));
+            const bodyBottom = y(Math.min(o, cl));
+            const bodyH = Math.max(1.5, bodyBottom - bodyTop);
+            return (
+              <g key={`${c.time || i}-${i}`}>
+                <line x1={cx} x2={cx} y1={y(h)} y2={y(l)} stroke={color} strokeWidth="1.2" opacity="0.9" />
+                <rect x={cx - bodyW / 2} y={bodyTop} width={bodyW} height={bodyH} fill={up ? "rgba(0,240,181,0.38)" : "rgba(255,93,125,0.42)"} stroke={color} strokeWidth="1" />
+              </g>
+            );
+          })}
+
+          {levels.map((level) => {
+            const ly = y(level.value);
+            return (
+              <g key={level.label}>
+                <line x1={left} x2={W - right} y1={ly} y2={ly} stroke={level.stroke} strokeWidth="1" strokeDasharray={level.label === "MARK" ? "3 5" : "7 5"} opacity="0.9" />
+                <rect x={W - right + 2} y={ly - 10} width="77" height="20" rx="3" fill="#0c111a" stroke={level.stroke} strokeWidth="0.8" />
+                <text x={W - right + 7} y={ly + 4} fill={level.stroke} fontSize="10" fontFamily="monospace">{level.label} {fmt(level.value)}</text>
+              </g>
+            );
+          })}
+
+          {[0, Math.floor(chart.valid.length / 2), chart.valid.length - 1].map((idx) => {
+            const c = chart.valid[idx];
+            if (!c) return null;
+            const x = left + step * idx + step / 2;
+            return <text key={`time-${idx}`} x={x} y={H - 14} fill="#64748b" fontSize="10" textAnchor="middle" fontFamily="monospace">{timeLabel(c.time)}</text>;
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+};
