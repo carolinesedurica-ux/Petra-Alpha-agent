@@ -11,6 +11,12 @@ const timeLabel = (seconds) => {
   return new Date(n * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 };
 
+const pnlLabel = (value) => {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return "";
+  return `${n >= 0 ? "+" : ""}$${n.toFixed(2)}`;
+};
+
 export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, barPeriod = "M5", updatedAt }) => {
   const chart = useMemo(() => {
     const valid = (candles || []).filter((c) =>
@@ -21,10 +27,11 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
     const overlay = [position?.entry_price, position?.stop_loss, position?.take_profit, marketPrice]
       .map(Number)
       .filter(Number.isFinite);
+    const markerPrices = valid.flatMap((c) => (c?.markers || []).map((m) => Number(m?.price)).filter(Number.isFinite));
     const lows = valid.map((c) => Number(c.low));
     const highs = valid.map((c) => Number(c.high));
-    const rawMin = Math.min(...lows, ...overlay);
-    const rawMax = Math.max(...highs, ...overlay);
+    const rawMin = Math.min(...lows, ...overlay, ...markerPrices);
+    const rawMax = Math.max(...highs, ...overlay, ...markerPrices);
     const span = Math.max(rawMax - rawMin, rawMax * 0.0005, 1);
     const min = rawMin - span * 0.08;
     const max = rawMax + span * 0.08;
@@ -66,15 +73,15 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
       <div className="px-4 py-3 border-b border-[var(--border)] flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="font-mono text-xs text-slate-200">US500 · {barPeriod} CANDLES</div>
-          <div className="font-mono text-[10px] text-slate-500 mt-1">Same cTrader bars used by Petra's decision engine</div>
+          <div className="font-mono text-[10px] text-slate-500 mt-1">Same cTrader bars used by Petra's decision engine · entries/exits overlaid</div>
         </div>
-        <div className="font-mono text-xs text-slate-400 flex gap-4">
+        <div className="font-mono text-xs text-slate-400 flex gap-4 flex-wrap">
           <span>MARK <span className="text-slate-100">{fmt(marketPrice)}</span></span>
           <span>UPDATED <span className="text-slate-100">{timeLabel(updatedAt)}</span></span>
         </div>
       </div>
       <div className="w-full overflow-x-auto">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[760px] h-auto block" role="img" aria-label="US500 cTrader candlestick chart">
+        <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[760px] h-auto block" role="img" aria-label="US500 cTrader candlestick chart with Petra trade markers">
           <rect x="0" y="0" width={W} height={H} fill="#090e16" />
 
           {gridPrices.map((price, i) => {
@@ -98,10 +105,44 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
             const bodyTop = y(Math.max(o, cl));
             const bodyBottom = y(Math.min(o, cl));
             const bodyH = Math.max(1.5, bodyBottom - bodyTop);
+            const markers = c?.markers || [];
             return (
               <g key={`${c.time || i}-${i}`}>
                 <line x1={cx} x2={cx} y1={y(h)} y2={y(l)} stroke={color} strokeWidth="1.2" opacity="0.9" />
                 <rect x={cx - bodyW / 2} y={bodyTop} width={bodyW} height={bodyH} fill={up ? "rgba(0,240,181,0.38)" : "rgba(255,93,125,0.42)"} stroke={color} strokeWidth="1" />
+                {markers.map((m, markerIndex) => {
+                  const price = Number(m?.price);
+                  if (!Number.isFinite(price)) return null;
+                  const isEntry = m.kind === "ENTRY";
+                  const markerColor = isEntry ? "#38bdf8" : Number(m?.pnl) >= 0 ? "#34d399" : "#fb7185";
+                  const my = y(price);
+                  const direction = isEntry ? -1 : 1;
+                  const tipY = my;
+                  const baseY = my + direction * 12;
+                  const textY = my + direction * 24;
+                  const label = isEntry
+                    ? `${m.side || ""} ENTRY ${fmt(price)}`
+                    : `EXIT ${fmt(price)} ${pnlLabel(m?.pnl)}`.trim();
+                  return (
+                    <g key={`${m.kind}-${m.time || markerIndex}-${markerIndex}`}>
+                      <polygon
+                        points={`${cx},${tipY} ${cx - 5},${baseY} ${cx + 5},${baseY}`}
+                        fill={markerColor}
+                        opacity="0.95"
+                      />
+                      <text
+                        x={cx}
+                        y={textY}
+                        fill={markerColor}
+                        fontSize="9"
+                        textAnchor="middle"
+                        fontFamily="monospace"
+                      >
+                        {label}
+                      </text>
+                    </g>
+                  );
+                })}
               </g>
             );
           })}
