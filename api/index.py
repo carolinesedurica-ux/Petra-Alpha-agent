@@ -1,8 +1,6 @@
 import sys
 import os
-import json
 import hmac
-import subprocess
 import traceback
 import httpx
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -29,9 +27,79 @@ def _operator_authorized(request: Request) -> bool:
     return hmac.compare_digest(supplied, f"Bearer {token}")
 
 
+def _ctrader_safe_runtime() -> bool:
+    provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
+    environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
+    return (
+        provider == "ctrader"
+        and environment == "demo"
+        and _as_bool("PETRA_CTRADER_DRY_RUN", True)
+        and not _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
+        and not _as_bool("ALLOW_LIVE_TRADING", False)
+    )
+
+
+async def _proxy_render(path: str, mode: str, timeout: float = 45.0) -> JSONResponse:
+    render_url = (os.environ.get("PETRA_CTRADER_RENDER_URL") or "").strip().rstrip("/")
+    bridge_token = (os.environ.get("PETRA_RENDER_BRIDGE_TOKEN") or "").strip()
+    if not render_url or not bridge_token:
+        return JSONResponse(
+            status_code=503,
+            headers={"Cache-Control": "no-store, max-age=0"},
+            content={
+                "service": "Petra Alpha Agent",
+                "broker": "ctrader",
+                "mode": mode,
+                "status": "blocked",
+                "execution_enabled": False,
+                "error": "Render cTrader bridge is not configured",
+            },
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.get(
+                f"{render_url}{path}",
+                headers={"Authorization": f"Bearer {bridge_token}"},
+            )
+    except httpx.HTTPError as exc:
+        return JSONResponse(
+            status_code=502,
+            headers={"Cache-Control": "no-store, max-age=0"},
+            content={
+                "service": "Petra Alpha Agent",
+                "broker": "ctrader",
+                "mode": mode,
+                "status": "error",
+                "execution_enabled": False,
+                "error": f"Render bridge request failed: {type(exc).__name__}",
+            },
+        )
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {
+            "service": "Petra Alpha Agent",
+            "broker": "ctrader",
+            "mode": mode,
+            "status": "error",
+            "execution_enabled": False,
+            "error": "Render bridge returned invalid data",
+        }
+
+    payload["proxied_via"] = "vercel"
+    payload["execution_enabled"] = False
+    return JSONResponse(
+        status_code=response.status_code,
+        headers={"Cache-Control": "no-store, max-age=0"},
+        content=payload,
+    )
+
+
 @app.middleware("http")
 async def ctrader_runtime_status_middleware(request: Request, call_next):
-    """Expose safe cTrader runtime checks and an authenticated read-only snapshot."""
+    """Expose safe cTrader runtime, account snapshot, and shadow analysis."""
     if request.method == "GET" and request.url.path == "/api/ctrader/status":
         provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
         environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
@@ -72,11 +140,12 @@ async def ctrader_runtime_status_middleware(request: Request, call_next):
                 "pilot_armed": armed,
                 "allow_live_trading": generic_live,
                 "ready_for_read_only": ready_for_read_only,
+                "autonomous_shadow_ready": ready_for_read_only,
                 "execution_enabled": False,
             },
         )
 
-    if request.method == "GET" and request.url.path == "/api/ctrader/snapshot":
+    if request.method == "GET" and request.url.path in {"/api/ctrader/snapshot", "/api/ctrader/analysis"}:
         if not _operator_authorized(request):
             return JSONResponse(
                 status_code=401,
@@ -84,99 +153,31 @@ async def ctrader_runtime_status_middleware(request: Request, call_next):
                 content={"detail": "operator authentication required"},
             )
 
-        provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
-        environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
-        dry_run = _as_bool("PETRA_CTRADER_DRY_RUN", True)
-        armed = _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
-        generic_live = _as_bool("ALLOW_LIVE_TRADING", False)
-
-        if not (
-            provider == "ctrader"
-            and environment == "demo"
-            and dry_run
-            and not armed
-            and not generic_live
-        ):
+        mode = "read_only" if request.url.path.endswith("snapshot") else "autonomous_shadow_analysis"
+        if not _ctrader_safe_runtime():
             return JSONResponse(
                 status_code=503,
                 headers={"Cache-Control": "no-store, max-age=0"},
                 content={
                     "service": "Petra Alpha Agent",
                     "broker": "ctrader",
-                    "mode": "read_only",
+                    "mode": mode,
                     "status": "blocked",
                     "execution_enabled": False,
-                    "error": "cTrader snapshot safety gate is not satisfied",
+                    "error": "cTrader demo dry-run safety gate is not satisfied",
                 },
             )
 
-        render_url = (os.environ.get("PETRA_CTRADER_RENDER_URL") or "").strip().rstrip("/")
-        bridge_token = (os.environ.get("PETRA_RENDER_BRIDGE_TOKEN") or "").strip()
-        if not render_url or not bridge_token:
-            return JSONResponse(
-                status_code=503,
-                headers={"Cache-Control": "no-store, max-age=0"},
-                content={
-                    "service": "Petra Alpha Agent",
-                    "broker": "ctrader",
-                    "mode": "read_only",
-                    "status": "blocked",
-                    "execution_enabled": False,
-                    "error": "Render cTrader bridge is not configured",
-                },
-            )
-
-        try:
-            async with httpx.AsyncClient(timeout=45.0) as client:
-                response = await client.get(
-                    f"{render_url}/api/ctrader/snapshot",
-                    headers={"Authorization": f"Bearer {bridge_token}"},
-                )
-        except httpx.HTTPError as exc:
-            return JSONResponse(
-                status_code=502,
-                headers={"Cache-Control": "no-store, max-age=0"},
-                content={
-                    "service": "Petra Alpha Agent",
-                    "broker": "ctrader",
-                    "mode": "read_only",
-                    "status": "error",
-                    "execution_enabled": False,
-                    "error": f"Render bridge request failed: {type(exc).__name__}",
-                },
-            )
-
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = {
-                "service": "Petra Alpha Agent",
-                "broker": "ctrader",
-                "mode": "read_only",
-                "status": "error",
-                "execution_enabled": False,
-                "error": "Render bridge returned invalid data",
-            }
-
-        payload["proxied_via"] = "vercel"
-        payload["execution_enabled"] = False
-        return JSONResponse(
-            status_code=response.status_code,
-            headers={"Cache-Control": "no-store, max-age=0"},
-            content=payload,
-        )
+        render_path = "/api/ctrader/snapshot" if request.url.path.endswith("snapshot") else "/api/ctrader/analysis"
+        timeout = 45.0 if request.url.path.endswith("snapshot") else 60.0
+        return await _proxy_render(render_path, mode, timeout)
 
     return await call_next(request)
 
 
 @app.middleware("http")
 async def ctrader_oauth_callback_middleware(request: Request, call_next):
-    """Public OAuth landing endpoint for cTrader.
-
-    This intentionally does not log or expose the authorization code. Token exchange
-    will be enabled only after cTrader credentials are stored in protected deployment
-    secrets and state validation is wired in.
-    """
+    """Public OAuth landing endpoint for cTrader."""
     if request.method == "GET" and request.url.path == "/api/ctrader/callback":
         error = request.query_params.get("error")
         code = request.query_params.get("code")
