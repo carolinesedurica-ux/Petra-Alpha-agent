@@ -49,6 +49,7 @@ def _default_state() -> dict[str, Any]:
         "losses": 0,
         "cycles": 0,
         "position": None,
+        "trade_history": [],
         "last_action": "INIT",
         "updated_at": None,
     }
@@ -59,6 +60,7 @@ def _load_state() -> dict[str, Any]:
         if STATE_FILE.exists():
             data = json.loads(STATE_FILE.read_text())
             if isinstance(data, dict):
+                data.setdefault("trade_history", [])
                 return data
     except Exception:
         pass
@@ -83,16 +85,22 @@ def _close_position(state: dict[str, Any], price: float, reason: str) -> None:
         state["wins"] = int(state.get("wins", 0)) + 1
     else:
         state["losses"] = int(state.get("losses", 0)) + 1
-    state["last_action"] = "CLOSE"
-    state["last_close"] = {
+    closed_at = datetime.now(timezone.utc).isoformat()
+    closed = {
         "side": side,
+        "symbol": pos.get("symbol") or "US500",
         "entry_price": entry,
         "exit_price": price,
         "quantity": qty,
         "pnl": round(pnl, 6),
         "reason": reason,
-        "closed_at": datetime.now(timezone.utc).isoformat(),
+        "opened_at": pos.get("opened_at"),
+        "closed_at": closed_at,
     }
+    state["last_action"] = "CLOSE"
+    state["last_close"] = closed
+    history = list(state.get("trade_history") or [])
+    state["trade_history"] = [closed, *history][:20]
     state["position"] = None
 
 
@@ -128,6 +136,49 @@ def _open_position(state: dict[str, Any], analysis: dict[str, Any], direction: s
     }
     state["last_action"] = f"OPEN_{direction}"
     state["last_reason"] = signal.get("reason")
+
+
+def _iso_to_epoch_seconds(value: Any) -> int | None:
+    if not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return None
+
+
+def _decorate_candles(candles: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    out = [dict(c) for c in (candles or [])]
+    if not out:
+        return out
+
+    def attach(kind: str, side: str, price: float, when: Any, pnl: float | None = None) -> None:
+        ts = _iso_to_epoch_seconds(when)
+        if ts is None:
+            return
+        nearest = min(
+            range(len(out)),
+            key=lambda i: abs(int(out[i].get("time") or 0) - ts),
+        )
+        marker = {
+            "kind": kind,
+            "side": side,
+            "price": round(float(price), 5),
+            "time": ts,
+        }
+        if pnl is not None:
+            marker["pnl"] = round(float(pnl), 6)
+        out[nearest].setdefault("markers", []).append(marker)
+
+    for trade in list(state.get("trade_history") or [])[:10]:
+        attach("ENTRY", str(trade.get("side") or ""), float(trade.get("entry_price") or 0), trade.get("opened_at"))
+        attach("EXIT", str(trade.get("side") or ""), float(trade.get("exit_price") or 0), trade.get("closed_at"), float(trade.get("pnl") or 0))
+
+    pos = state.get("position")
+    if pos:
+        attach("ENTRY", str(pos.get("side") or ""), float(pos.get("entry_price") or 0), pos.get("opened_at"))
+
+    return out
 
 
 def run_cycle() -> dict[str, Any]:
@@ -185,6 +236,8 @@ def run_cycle() -> dict[str, Any]:
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     _save_state(state)
 
+    candles = _decorate_candles(analysis.get("candles") or [], state)
+
     return {
         "status": "ok",
         "mode": "ctrader_paper_autonomous",
@@ -204,10 +257,11 @@ def run_cycle() -> dict[str, Any]:
         "losses": state.get("losses"),
         "cycles": state.get("cycles"),
         "position": state.get("position"),
+        "trade_history": state.get("trade_history") or [],
         "market_price": analysis.get("market_price") or price,
         "market_updated_at": analysis.get("market_updated_at"),
         "bar_period": analysis.get("bar_period") or "M5",
-        "candles": analysis.get("candles") or [],
+        "candles": candles,
         "updated_at": state.get("updated_at"),
     }
 
