@@ -6,7 +6,7 @@ import httpx
 from fastapi.responses import JSONResponse, HTMLResponse
 from starlette.requests import Request
 
-# Make backend modules importable from the Vercel serverless function context
+# Make backend modules importable from the Vercel serverless function context.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
 
 from server import app  # noqa: F401
@@ -37,6 +37,49 @@ def _ctrader_safe_runtime() -> bool:
         and not _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
         and not _as_bool("ALLOW_LIVE_TRADING", False)
     )
+
+
+def _local_ctrader_status() -> dict:
+    provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
+    environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
+    expected_account_id = (os.environ.get("CTRADER_EXPECTED_ACCOUNT_ID") or "").strip()
+    has_client_id = bool((os.environ.get("CTRADER_CLIENT_ID") or "").strip())
+    has_client_secret = bool((os.environ.get("CTRADER_CLIENT_SECRET") or "").strip())
+    has_access_token = bool((os.environ.get("CTRADER_ACCESS_TOKEN") or "").strip())
+    dry_run = _as_bool("PETRA_CTRADER_DRY_RUN", True)
+    armed = _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
+    generic_live = _as_bool("ALLOW_LIVE_TRADING", False)
+    ready = (
+        provider == "ctrader"
+        and environment == "demo"
+        and bool(expected_account_id)
+        and has_client_id
+        and has_client_secret
+        and has_access_token
+        and dry_run
+        and not armed
+        and not generic_live
+    )
+    return {
+        "service": "Petra Alpha Agent",
+        "broker_provider": provider,
+        "ctrader_environment": environment,
+        "expected_account_id": expected_account_id or None,
+        "credentials_present": {
+            "client_id": has_client_id,
+            "client_secret": has_client_secret,
+            "access_token": has_access_token,
+        },
+        "dry_run": dry_run,
+        "pilot_armed": armed,
+        "allow_live_trading": generic_live,
+        "ready_for_read_only": ready,
+        "autonomous_shadow_ready": ready,
+        "paper_autonomous_ready": ready,
+        "paper_interval_seconds": 300,
+        "execution_enabled": False,
+        "funded_execution_enabled": False,
+    }
 
 
 async def _proxy_render(path: str, mode: str, timeout: float = 45.0) -> JSONResponse:
@@ -90,6 +133,7 @@ async def _proxy_render(path: str, mode: str, timeout: float = 45.0) -> JSONResp
 
     payload["proxied_via"] = "vercel"
     payload["execution_enabled"] = False
+    payload["funded_execution_enabled"] = False
     return JSONResponse(
         status_code=response.status_code,
         headers={"Cache-Control": "no-store, max-age=0"},
@@ -99,50 +143,16 @@ async def _proxy_render(path: str, mode: str, timeout: float = 45.0) -> JSONResp
 
 @app.middleware("http")
 async def ctrader_runtime_status_middleware(request: Request, call_next):
-    """Expose safe cTrader runtime, account snapshot, and shadow analysis."""
+    """Expose safe cTrader runtime, snapshot, paper state, and shadow analysis."""
     if request.method == "GET" and request.url.path == "/api/ctrader/status":
-        provider = (os.environ.get("BROKER_PROVIDER") or "alpaca").strip().lower()
-        environment = (os.environ.get("PETRA_CTRADER_ENV") or "demo").strip().lower()
-        expected_account_id = (os.environ.get("CTRADER_EXPECTED_ACCOUNT_ID") or "").strip()
-        has_client_id = bool((os.environ.get("CTRADER_CLIENT_ID") or "").strip())
-        has_client_secret = bool((os.environ.get("CTRADER_CLIENT_SECRET") or "").strip())
-        has_access_token = bool((os.environ.get("CTRADER_ACCESS_TOKEN") or "").strip())
-        dry_run = _as_bool("PETRA_CTRADER_DRY_RUN", True)
-        armed = _as_bool("PETRA_CTRADER_PILOT_ARMED", False)
-        generic_live = _as_bool("ALLOW_LIVE_TRADING", False)
-
-        ready_for_read_only = (
-            provider == "ctrader"
-            and environment == "demo"
-            and bool(expected_account_id)
-            and has_client_id
-            and has_client_secret
-            and has_access_token
-            and dry_run
-            and not armed
-            and not generic_live
-        )
-
+        if _ctrader_safe_runtime():
+            proxied = await _proxy_render("/api/ctrader/status", "ctrader_runtime_status", 20.0)
+            if proxied.status_code == 200:
+                return proxied
         return JSONResponse(
             status_code=200,
             headers={"Cache-Control": "no-store, max-age=0"},
-            content={
-                "service": "Petra Alpha Agent",
-                "broker_provider": provider,
-                "ctrader_environment": environment,
-                "expected_account_id": expected_account_id or None,
-                "credentials_present": {
-                    "client_id": has_client_id,
-                    "client_secret": has_client_secret,
-                    "access_token": has_access_token,
-                },
-                "dry_run": dry_run,
-                "pilot_armed": armed,
-                "allow_live_trading": generic_live,
-                "ready_for_read_only": ready_for_read_only,
-                "autonomous_shadow_ready": ready_for_read_only,
-                "execution_enabled": False,
-            },
+            content=_local_ctrader_status(),
         )
 
     if request.method == "GET" and request.url.path in {"/api/ctrader/snapshot", "/api/ctrader/analysis"}:
@@ -181,7 +191,6 @@ async def ctrader_oauth_callback_middleware(request: Request, call_next):
     if request.method == "GET" and request.url.path == "/api/ctrader/callback":
         error = request.query_params.get("error")
         code = request.query_params.get("code")
-
         headers = {
             "Cache-Control": "no-store, max-age=0",
             "Pragma": "no-cache",
@@ -234,5 +243,5 @@ async def catch_exceptions_middleware(request: Request, call_next):
         print(f"VERCEL_ERROR [{request.url.path}]:\n{err_str}")
         return JSONResponse(
             status_code=500,
-            content={"error": "Internal server error", "path": request.url.path}
+            content={"error": "Internal server error", "path": request.url.path},
         )
