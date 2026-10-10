@@ -19,11 +19,43 @@ const pnlLabel = (value) => {
 
 export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, barPeriod = "M5", updatedAt }) => {
   const chart = useMemo(() => {
-    const valid = (candles || []).filter((c) =>
+    const all = (candles || []).filter((c) =>
       [c?.open, c?.high, c?.low, c?.close].every((v) => Number.isFinite(Number(v)))
     );
-    if (!valid.length) return null;
+    if (!all.length) return null;
 
+    const entryIndexes = [];
+    const exitIndexes = [];
+    all.forEach((c, i) => {
+      (c?.markers || []).forEach((m) => {
+        if (m?.kind === "ENTRY") entryIndexes.push(i);
+        if (m?.kind === "EXIT") exitIndexes.push(i);
+      });
+    });
+
+    let focusMode = "MARKET";
+    let focusIndex = all.length - 1;
+    let focusStart = Math.max(0, all.length - 48);
+    let focusEnd = all.length;
+
+    if (position && entryIndexes.length) {
+      focusMode = "ACTIVE TRADE";
+      focusIndex = entryIndexes[entryIndexes.length - 1];
+      focusStart = Math.max(0, focusIndex - 24);
+      focusEnd = Math.min(all.length, Math.max(focusIndex + 24, all.length));
+    } else if (exitIndexes.length) {
+      focusMode = "LATEST COMPLETED TRADE";
+      const exitIndex = exitIndexes[exitIndexes.length - 1];
+      const priorEntries = entryIndexes.filter((i) => i <= exitIndex);
+      const entryIndex = priorEntries.length ? priorEntries[priorEntries.length - 1] : exitIndex;
+      const lo = Math.min(entryIndex, exitIndex);
+      const hi = Math.max(entryIndex, exitIndex);
+      focusIndex = exitIndex;
+      focusStart = Math.max(0, lo - 16);
+      focusEnd = Math.min(all.length, hi + 17);
+    }
+
+    const valid = all.slice(focusStart, focusEnd);
     const overlay = [position?.entry_price, position?.stop_loss, position?.take_profit, marketPrice]
       .map(Number)
       .filter(Number.isFinite);
@@ -36,8 +68,8 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
     const min = rawMin - span * 0.08;
     const max = rawMax + span * 0.08;
 
-    return { valid, min, max };
-  }, [candles, marketPrice, position?.entry_price, position?.stop_loss, position?.take_profit]);
+    return { valid, min, max, focusMode, focusIndex, focusStart };
+  }, [candles, marketPrice, position, position?.entry_price, position?.stop_loss, position?.take_profit]);
 
   if (!chart) {
     return (
@@ -48,10 +80,10 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
   }
 
   const W = 1000;
-  const H = 340;
+  const H = 360;
   const left = 26;
   const right = 84;
-  const top = 24;
+  const top = 42;
   const bottom = 38;
   const plotW = W - left - right;
   const plotH = H - top - bottom;
@@ -76,6 +108,7 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
           <div className="font-mono text-[10px] text-slate-500 mt-1">Same cTrader bars used by Petra's decision engine · entries/exits overlaid</div>
         </div>
         <div className="font-mono text-xs text-slate-400 flex gap-4 flex-wrap">
+          <span>FOCUS <span className="text-[#00F0B5]">{chart.focusMode}</span></span>
           <span>MARK <span className="text-slate-100">{fmt(marketPrice)}</span></span>
           <span>UPDATED <span className="text-slate-100">{timeLabel(updatedAt)}</span></span>
         </div>
@@ -83,6 +116,9 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
       <div className="w-full overflow-x-auto">
         <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[760px] h-auto block" role="img" aria-label="US500 cTrader candlestick chart with Petra trade markers">
           <rect x="0" y="0" width={W} height={H} fill="#090e16" />
+          <text x={left} y="24" fill="#64748b" fontSize="10" fontFamily="monospace">
+            VALIDATION VIEW · {chart.focusMode}
+          </text>
 
           {gridPrices.map((price, i) => {
             const gy = y(price);
@@ -125,21 +161,8 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
                     : `EXIT ${fmt(price)} ${pnlLabel(m?.pnl)}`.trim();
                   return (
                     <g key={`${m.kind}-${m.time || markerIndex}-${markerIndex}`}>
-                      <polygon
-                        points={`${cx},${tipY} ${cx - 5},${baseY} ${cx + 5},${baseY}`}
-                        fill={markerColor}
-                        opacity="0.95"
-                      />
-                      <text
-                        x={cx}
-                        y={textY}
-                        fill={markerColor}
-                        fontSize="9"
-                        textAnchor="middle"
-                        fontFamily="monospace"
-                      >
-                        {label}
-                      </text>
+                      <polygon points={`${cx},${tipY} ${cx - 5},${baseY} ${cx + 5},${baseY}`} fill={markerColor} opacity="0.95" />
+                      <text x={cx} y={textY} fill={markerColor} fontSize="9" textAnchor="middle" fontFamily="monospace">{label}</text>
                     </g>
                   );
                 })}
