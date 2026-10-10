@@ -38,12 +38,10 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
     let focusStart = Math.max(0, all.length - 48);
     let focusEnd = all.length;
 
-    if (position && entryIndexes.length) {
-      focusMode = "ACTIVE TRADE";
-      focusIndex = entryIndexes[entryIndexes.length - 1];
-      focusStart = Math.max(0, focusIndex - 24);
-      focusEnd = Math.min(all.length, Math.max(focusIndex + 24, all.length));
-    } else if (exitIndexes.length) {
+    // Validation priority: as soon as a completed trade exists, focus it first.
+    // This intentionally overrides any newly opened position so the latest exit
+    // can be visually verified immediately.
+    if (exitIndexes.length) {
       focusMode = "LATEST COMPLETED TRADE";
       const exitIndex = exitIndexes[exitIndexes.length - 1];
       const priorEntries = entryIndexes.filter((i) => i <= exitIndex);
@@ -53,6 +51,11 @@ export const CTraderCandlestickChart = ({ candles = [], position, marketPrice, b
       focusIndex = exitIndex;
       focusStart = Math.max(0, lo - 16);
       focusEnd = Math.min(all.length, hi + 17);
+    } else if (position && entryIndexes.length) {
+      focusMode = "ACTIVE TRADE";
+      focusIndex = entryIndexes[entryIndexes.length - 1];
+      focusStart = Math.max(0, focusIndex - 24);
+      focusEnd = Math.min(all.length, Math.max(focusIndex + 24, all.length));
     }
 
     const valid = all.slice(focusStart, focusEnd);
