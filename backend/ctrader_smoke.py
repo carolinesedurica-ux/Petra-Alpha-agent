@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from typing import Any
 
@@ -20,6 +21,7 @@ from ctrader_open_api.messages.OpenApiMessages_pb2 import (
     ProtoOAAccountAuthRes,
     ProtoOAApplicationAuthReq,
     ProtoOAApplicationAuthRes,
+    ProtoOAErrorRes,
     ProtoOAGetAccountListByAccessTokenReq,
     ProtoOAGetAccountListByAccessTokenRes,
     ProtoOAReconcileReq,
@@ -91,9 +93,6 @@ def _send_read_only_checks() -> None:
     trader.ctidTraderAccountId = settings.expected_account_id
     _send(trader)
 
-    # Current cTrader Open API protobuf no longer exposes returnProtectionOrders
-    # on ProtoOAReconcileReq. Reconcile itself returns open positions and pending
-    # orders, which is all this read-only smoke test needs.
     reconcile = ProtoOAReconcileReq()
     reconcile.ctidTraderAccountId = settings.expected_account_id
     _send(reconcile)
@@ -109,6 +108,13 @@ def _maybe_done() -> None:
 def _on_message(_client, message) -> None:
     try:
         payload_type = message.payloadType
+
+        if payload_type == ProtoOAErrorRes().payloadType:
+            response = Protobuf.extract(message)
+            code = str(getattr(response, "errorCode", "") or "UNKNOWN")
+            description = str(getattr(response, "description", "") or "")
+            _fail(f"cTrader API error {code}: {description}".rstrip())
+            return
 
         if payload_type == ProtoOAApplicationAuthRes().payloadType:
             log.info("cTrader application authenticated")
@@ -160,12 +166,15 @@ def _on_message(_client, message) -> None:
             _maybe_done()
             return
 
-    except Exception as exc:  # fail closed on unexpected broker payloads
+        log.info("Received unhandled cTrader payload type %s", payload_type)
+
+    except Exception as exc:
         _fail(f"cTrader smoke parser failed: {type(exc).__name__}: {exc}")
 
 
 def _connected(_client) -> None:
     log.info("Connected to cTrader %s endpoint", settings.environment)
+    log.info("Sending cTrader application authentication request")
     request = ProtoOAApplicationAuthReq()
     request.clientId = settings.client_id
     request.clientSecret = settings.client_secret
@@ -176,6 +185,17 @@ def _disconnected(_client, reason) -> None:
     if not state.failed and not (state.trader_received and state.reconcile_received):
         text = getattr(reason, "getErrorMessage", lambda: str(reason))()
         _fail(f"cTrader disconnected before smoke test completed: {text}")
+
+
+def _start_render_api_if_enabled() -> None:
+    if (os.environ.get("PETRA_RUN_API") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    port = (os.environ.get("PORT") or "10000").strip()
+    log.info("Smoke test passed; starting Petra Render read-only API on port %s", port)
+    os.execv(
+        sys.executable,
+        [sys.executable, "-m", "uvicorn", "render_api:app", "--host", "0.0.0.0", "--port", port],
+    )
 
 
 def main() -> int:
@@ -201,7 +221,11 @@ def main() -> int:
     reactor.run()
 
     print(json.dumps(state.summary, sort_keys=True))
-    return 1 if state.failed else 0
+    if state.failed:
+        return 1
+
+    _start_render_api_if_enabled()
+    return 0
 
 
 if __name__ == "__main__":
