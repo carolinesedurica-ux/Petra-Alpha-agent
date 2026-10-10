@@ -1,8 +1,8 @@
 """Render cTrader bridge for Petra.
 
-Exposes account telemetry, autonomous shadow analysis and a separately gated
-DEMO-only autonomous execution cycle through the private Render bridge.
-Funded/live cTrader execution remains impossible from this service.
+Exposes account telemetry, autonomous shadow analysis, an autonomous paper-trading
+loop, and a separately gated DEMO-only execution cycle through the private Render
+bridge. Funded/live cTrader execution remains impossible from this service.
 """
 from __future__ import annotations
 
@@ -20,7 +20,9 @@ from fastapi.responses import JSONResponse
 app = FastAPI(title="Petra cTrader Bridge")
 ROOT = Path(__file__).resolve().parent
 _last_demo_cycle: dict = {"status": "not_run"}
+_last_paper_cycle: dict = {"status": "not_run"}
 _demo_task = None
+_paper_task = None
 
 
 def _as_bool(name: str, default: bool = False) -> bool:
@@ -83,6 +85,10 @@ def _demo_execution_gate() -> tuple[bool, dict]:
         "funded_execution_enabled": False,
     })
     return ready, status
+
+
+def _paper_interval_seconds() -> int:
+    return max(300, int(os.environ.get("PETRA_CTRADER_PAPER_INTERVAL_SECONDS") or "300"))
 
 
 def _run_json_script(script_name: str, timeout: int) -> tuple[int, dict]:
@@ -152,8 +158,32 @@ async def _run_demo_cycle_once() -> tuple[int, dict]:
     return status_code, payload
 
 
+async def _run_paper_cycle_once() -> tuple[int, dict]:
+    global _last_paper_cycle
+    ready, status = _base_gate()
+    if not ready:
+        payload = {
+            "broker": "ctrader",
+            "mode": "ctrader_paper_autonomous",
+            "status": "blocked",
+            "orders_enabled": False,
+            "broker_execution": False,
+            "error": "Paper engine requires the cTrader demo dry-run safety gate",
+            **status,
+        }
+        _last_paper_cycle = payload
+        return 503, payload
+
+    status_code, payload = await asyncio.to_thread(
+        _run_json_script, "ctrader_paper_engine.py", 80
+    )
+    payload["orders_enabled"] = False
+    payload["broker_execution"] = False
+    _last_paper_cycle = payload
+    return status_code, payload
+
+
 async def _autonomous_demo_loop() -> None:
-    # Small delay lets the startup smoke test/server settle before the first cycle.
     await asyncio.sleep(20)
     while True:
         ready, status = _demo_execution_gate()
@@ -178,11 +208,39 @@ async def _autonomous_demo_loop() -> None:
         await asyncio.sleep(interval)
 
 
+async def _autonomous_paper_loop() -> None:
+    await asyncio.sleep(30)
+    while True:
+        try:
+            code, payload = await _run_paper_cycle_once()
+            print(
+                "PETRA_PAPER_CYCLE "
+                + json.dumps({
+                    "http": code,
+                    "status": payload.get("status"),
+                    "analysis_decision": payload.get("analysis_decision"),
+                    "final_decision": payload.get("final_decision"),
+                    "last_action": payload.get("last_action"),
+                    "balance": payload.get("balance"),
+                    "equity": payload.get("equity"),
+                    "realized_pnl": payload.get("realized_pnl"),
+                    "unrealized_pnl": payload.get("unrealized_pnl"),
+                    "error": payload.get("error"),
+                }, sort_keys=True),
+                flush=True,
+            )
+        except Exception as exc:
+            print(f"PETRA_PAPER_CYCLE_ERROR {type(exc).__name__}: {exc}", flush=True)
+        await asyncio.sleep(_paper_interval_seconds())
+
+
 @app.on_event("startup")
-async def start_demo_worker() -> None:
-    global _demo_task
+async def start_workers() -> None:
+    global _demo_task, _paper_task
     if _demo_task is None:
         _demo_task = asyncio.create_task(_autonomous_demo_loop())
+    if _paper_task is None:
+        _paper_task = asyncio.create_task(_autonomous_paper_loop())
 
 
 @app.get("/")
@@ -193,6 +251,7 @@ async def root():
         "service": "Petra cTrader bridge",
         "status": "online",
         "read_only_ready": ready,
+        "paper_autonomous_ready": ready,
         "demo_autonomous_ready": demo_ready,
         "funded_execution_enabled": False,
     }
@@ -205,6 +264,9 @@ async def health():
     return {
         "status": "ok" if base_ready else "blocked",
         **status,
+        "paper_autonomous_ready": base_ready,
+        "paper_interval_seconds": _paper_interval_seconds(),
+        "last_paper_cycle": _last_paper_cycle,
         "demo_autonomous_ready": ready,
         "last_demo_cycle": _last_demo_cycle,
     }
@@ -215,6 +277,9 @@ async def ctrader_status(authorization: str | None = Header(default=None)):
     if not _bridge_authorized(authorization):
         raise HTTPException(status_code=401, detail="bridge authentication required")
     _, status = _demo_execution_gate()
+    status["paper_autonomous_ready"] = bool(status.get("ready_for_read_only"))
+    status["paper_interval_seconds"] = _paper_interval_seconds()
+    status["last_paper_cycle"] = _last_paper_cycle
     status["last_demo_cycle"] = _last_demo_cycle
     return JSONResponse(status_code=200, headers={"Cache-Control": "no-store"}, content=status)
 
@@ -267,6 +332,15 @@ async def ctrader_analysis(authorization: str | None = Header(default=None)):
     status_code, payload = _run_json_script("ctrader_autonomous_bridge.py", 55)
     payload["execution_enabled"] = False
     payload["orders_enabled"] = False
+    return JSONResponse(status_code=status_code, headers={"Cache-Control": "no-store"}, content=payload)
+
+
+@app.post("/api/ctrader/paper-cycle")
+async def ctrader_paper_cycle(authorization: str | None = Header(default=None)):
+    """Run one autonomous paper-trading cycle. Never submits broker orders."""
+    if not _bridge_authorized(authorization):
+        raise HTTPException(status_code=401, detail="bridge authentication required")
+    status_code, payload = await _run_paper_cycle_once()
     return JSONResponse(status_code=status_code, headers={"Cache-Control": "no-store"}, content=payload)
 
 
