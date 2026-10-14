@@ -26,6 +26,7 @@ from alpaca import make_alpaca, UNIVERSE
 from agent import (run_cycle, seed_demo, get_config, get_agent_state,
                    market_status, mark_positions, close_position as close_spread)
 from engines import build_spread, risk_gate
+from loss_protection import EntryBlocked
 from llm import chat_stream, get_verdict
 from models import RiskConfig, Position, Decision, now_iso, new_id
 
@@ -581,6 +582,8 @@ async def manual_open_position(payload: dict = Body(...)):
     cycle_id = f"man-{new_id()[:6]}"
     try:
         order = await alpaca.place_mleg(proposal, cycle_id=cycle_id)
+    except EntryBlocked as e:
+        raise HTTPException(status_code=400, detail=f"Entry protection: {e}") from e
     except Exception as e:
         order = {"order_id": "", "status": "error", "alpaca_status": str(e)[:200], "filled_credit": 0}
 

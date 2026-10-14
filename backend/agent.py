@@ -11,6 +11,7 @@ from alpaca import UNIVERSE, record_snapshot
 from engines import build_spread, risk_gate
 from llm import get_verdict
 from models import Position, Decision, RiskConfig, AgentState, now_iso, new_id
+from loss_protection import check_losses, EntryBlocked
 
 SENTIMENTS = ["neutral wire flow", "mild bullish tape", "cautious / mixed headlines",
               "risk-off chatter", "earnings drift", "macro data pending", "steady bid"]
@@ -150,6 +151,14 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
         return {"cycle_id": cycle_id, "status": "market_closed", "message": mkt["message"], "decisions": []}
 
     # 1. refresh the tape (mock: random walk / live: IEX snapshots) + manage existing positions
+    # Observe/latch losses before exits can change equity, but do not block exits.
+    loss_block = None
+    try:
+        before_exits = await db.positions.find({"status": "open"}, {"_id": 0}).to_list(200)
+        await alpaca.recompute_equity(before_exits)
+        await check_losses(db, await alpaca.get_account(), cfg)
+    except EntryBlocked as exc:
+        loss_block = str(exc)
     await alpaca.advance_market()
     exits = await manage_positions(db, alpaca, cfg, cycle_id)
 
@@ -159,18 +168,19 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
     equity, _ = await alpaca.recompute_equity(open_pos)
     acc = await alpaca.get_account()
 
-    day_start = float(acc.get("day_start_equity") or equity or 0.0)
-    daily_loss_pct = ((day_start - equity) / day_start * 100.0) if day_start > 0 and equity < day_start else 0.0
-    if daily_loss_pct >= float(cfg.get("max_daily_loss_pct", 2.0)):
+    try:
+        if loss_block:
+            raise EntryBlocked(loss_block)
+        await check_losses(db, acc, cfg)
+    except EntryBlocked as exc:
         dec = Decision(
             cycle_id=cycle_id, underlying="—", outcome="skipped",
-            reason=(f"DAILY LOSS STOP: equity is down {daily_loss_pct:.2f}% from day start; "
-                    f"limit is {cfg.get('max_daily_loss_pct', 2.0):.2f}%. Existing positions remain managed; no new risk.")
+            reason=f"ENTRY PROTECTION: {exc}. Existing positions remain managed; no new risk."
         )
         await db.decisions.insert_one(dec.model_dump())
         await record_snapshot(db, equity, open_pos)
         await _bump_cycle(db, state)
-        return {"cycle_id": cycle_id, "status": "daily_loss_stop", "market": mkt,
+        return {"cycle_id": cycle_id, "status": "risk_lockout", "market": mkt,
                 "exits": exits, "decisions": [dec.model_dump()],
                 "equity": equity, "open_positions": len(open_pos)}
 
@@ -189,7 +199,7 @@ async def run_cycle(db, alpaca, force=False, max_candidates=3):
     market = await alpaca.get_market()
     candidates = [s for s in UNIVERSE if s not in held]
     random.shuffle(candidates)
-    slots = max(0, cfg["max_concurrent"] - len(open_pos))
+    slots = max(0, min(1, cfg["max_concurrent"]) - len(open_pos))
     decisions_out = []
 
     for sym in candidates[: min(max_candidates, max(1, slots) if slots else 1)]:
