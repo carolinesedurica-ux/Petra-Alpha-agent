@@ -101,8 +101,8 @@ def risk_gate(proposal, cfg, equity, open_positions):
                    "passed": c1, "detail": f"Trade risk ${proposal['max_risk']:,.0f}"})
 
     # 2. Max concurrent positions
-    c2 = len(open_positions) < cfg["max_concurrent"]
-    checks.append({"label": f"Concurrent < {cfg['max_concurrent']}",
+    c2 = len(open_positions) < min(1, cfg["max_concurrent"])
+    checks.append({"label": "Concurrent < 1 (one-position safeguard)",
                    "passed": c2, "detail": f"{len(open_positions)} open"})
 
     # 3. Total capital at risk cap (portfolio ≤ 3x single-trade cap)

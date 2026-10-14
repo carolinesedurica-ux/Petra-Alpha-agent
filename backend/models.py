@@ -91,7 +91,8 @@ class RiskConfig(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = "risk_config"
     max_risk_pct: float = 2.0
-    max_daily_loss_pct: float = 2.0
+    max_daily_loss_pct: float = Field(default=2.0, gt=0, le=100, allow_inf_nan=False)
+    max_drawdown_pct: float = Field(default=5.0, gt=0, le=100, allow_inf_nan=False)
     max_concurrent: int = 5
     max_contracts: int = 10
     min_credit_width: float = 0.15

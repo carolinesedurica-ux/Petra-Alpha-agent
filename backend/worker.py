@@ -65,6 +65,7 @@ async def main() -> int:
         # Import after validated paper-only environment has been installed.
         from alpaca import LiveAlpaca
         from agent import manage_positions, mark_positions, run_cycle
+        from loss_protection import check_losses, EntryBlocked
 
         store = await connect_store(settings.mongo_url, settings.db_name)
         db = store.db
@@ -112,6 +113,12 @@ async def main() -> int:
             # Safe now: ensure_seed cannot delete or replace a mismatched database.
             await broker.ensure_seed()
             await lease.assert_owned()
+            # Observe peaks/latches even during shadow or exits-only runs.
+            from agent import get_config
+            try:
+                await check_losses(db, await broker.get_account(), await get_config(db))
+            except EntryBlocked as exc:
+                log.warning("New entries blocked by loss protection: %s", exc)
 
             is_open = await broker.market_open()
             await db.worker_runs.update_one({"run_id": run_id}, {"$set": {

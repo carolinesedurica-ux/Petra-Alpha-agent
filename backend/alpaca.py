@@ -26,6 +26,7 @@ load_dotenv(ROOT_DIR.parent / ".env", override=False)
 
 from pricing import bs_price, bs_delta
 from models import now_iso, new_id, Decision
+from loss_protection import protected_entry
 
 MODE = os.environ.get("ALPACA_MODE", "live" if (os.environ.get("ALPACA_API_KEY") or os.environ.get("APCA_API_KEY_ID")) else "mock").lower()
 ET = ZoneInfo("America/New_York")
@@ -249,6 +250,7 @@ class MockAlpaca:
     async def reconcile(self, open_positions):
         return []
 
+    @protected_entry
     async def place_mleg(self, proposal, cycle_id=""):
         """Instant fill at mid; credit lands in cash."""
         await self.apply_equity_delta(proposal["credit"] * 100 * proposal["contracts"])
@@ -781,7 +783,9 @@ class LiveAlpaca:
         requested_qty = float(o.get("qty") or payload.get("qty") or 0)
         filled_qty = float(o.get("filled_qty") or 0)
 
-        if broker_status == "filled" and requested_qty > 0 and filled_qty >= requested_qty:
+        if o.get("filled_qty") is None or o.get("qty") is None:
+            petra_status = "review_required"
+        elif broker_status == "filled" and requested_qty > 0 and filled_qty >= requested_qty:
             petra_status = "filled"
         elif filled_qty > 0 or broker_status == "partially_filled":
             petra_status = "partial_review"
@@ -801,6 +805,7 @@ class LiveAlpaca:
         await log_order(self.db, meta, payload, res)
         return res
 
+    @protected_entry
     async def place_mleg(self, proposal, cycle_id=""):
         res = await self._submit(_open_payload(proposal, cycle_id), {
             "intent": "open", "underlying": proposal["underlying"], "strategy": proposal["strategy"],
