@@ -335,6 +335,34 @@ async def ctrader_analysis(authorization: str | None = Header(default=None)):
     return JSONResponse(status_code=status_code, headers={"Cache-Control": "no-store"}, content=payload)
 
 
+@app.get("/api/ctrader/paper-history")
+async def ctrader_paper_history(authorization: str | None = Header(default=None)):
+    """Expose local simulated trade history; never sends broker orders.
+
+    Note: /tmp state is ephemeral and must be migrated to durable storage
+    before this endpoint can be treated as a complete audit trail.
+    """
+    if not _bridge_authorized(authorization):
+        raise HTTPException(status_code=401, detail="bridge authentication required")
+    from ctrader_paper_engine import _load_state
+    state = _load_state()
+    return JSONResponse(
+        status_code=200,
+        headers={"Cache-Control": "no-store"},
+        content={
+            "mode": "ctrader_paper_autonomous",
+            "source": "local_ephemeral_simulation",
+            "broker_orders": False,
+            "history_complete": False,
+            "updated_at": state.get("updated_at"),
+            "balance": state.get("balance"),
+            "equity": state.get("equity"),
+            "position": state.get("position"),
+            "trade_history": state.get("trade_history", []),
+        },
+    )
+
+
 @app.post("/api/ctrader/paper-cycle")
 async def ctrader_paper_cycle(authorization: str | None = Header(default=None)):
     """Run one autonomous paper-trading cycle. Never submits broker orders."""
