@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 import os
 import subprocess
 import sys
@@ -219,12 +220,26 @@ def _open_demo_order(direction: str) -> None:
     if symbol_id <= 0 or volume <= 0 or price <= 0 or stop <= 0 or target <= 0:
         _fail("Analysis did not provide a complete executable demo setup")
         return
-    stop_distance = abs(price - stop)
-    target_distance = abs(target - price)
-    relative_stop = int(round(stop_distance * 100000.0))
-    relative_target = int(round(target_distance * 100000.0))
-    if relative_stop <= 0 or relative_target <= 0:
+    # cTrader relative prices are scaled by 100000, but must first be
+    # quantized to the broker symbol's supported price precision.
+    digits = int(analysis.get("symbol_digits", -1))
+    if not 0 <= digits <= 5:
+        _fail("Broker symbol digits missing or unsupported; refusing unprotected demo order")
+        return
+    quantum = Decimal(1).scaleb(-digits)
+    scale = Decimal(100000)
+    stop_distance = abs(Decimal(str(price)) - Decimal(str(stop)))
+    target_distance = abs(Decimal(str(target)) - Decimal(str(price)))
+    if stop_distance <= 0 or target_distance <= 0:
         _fail("Invalid relative protection distances")
+        return
+    # Never tighten a stop because of rounding; reject zero-distance targets.
+    quantized_stop = stop_distance.quantize(quantum, rounding=ROUND_CEILING)
+    quantized_target = target_distance.quantize(quantum, rounding=ROUND_FLOOR)
+    relative_stop = int(quantized_stop * scale)
+    relative_target = int(quantized_target * scale)
+    if relative_stop <= 0 or relative_target <= 0:
+        _fail("Protection distances are smaller than broker price precision")
         return
 
     req = ProtoOANewOrderReq()
@@ -243,8 +258,9 @@ def _open_demo_order(direction: str) -> None:
         "requested_volume_cents": volume,
         "requested_volume_units": units,
         "reference_price": price,
-        "relative_stop_distance": round(stop_distance, 5),
-        "relative_target_distance": round(target_distance, 5),
+        "relative_stop_distance": float(quantized_stop),
+        "relative_target_distance": float(quantized_target),
+        "symbol_digits": digits,
     })
     _send(req)
 
