@@ -9,3 +9,5 @@ pydantic==2.13.4
 openai==1.99.9
 tzdata
 mongomock-motor==0.0.36
+ctrader-open-api>=0.9.2
+service_identity>=24.1.0
