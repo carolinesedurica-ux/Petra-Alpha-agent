@@ -414,6 +414,7 @@ def _on_message(_client, message) -> None:
                 "pending_orders": state.pending_orders,
                 "broker_symbol": state.symbol_name,
                 "symbol_id": state.symbol_id,
+                "symbol_digits": int(getattr(state.symbol, "digits", -1)),
                 "bar_period": "M5",
                 "bar_count": len(bars),
                 "minimum_volume_units": float(getattr(state.symbol, "minVolume", 0) or 0) / 100.0,
