@@ -221,6 +221,9 @@ async def _autonomous_paper_loop() -> None:
                     "analysis_decision": payload.get("analysis_decision"),
                     "final_decision": payload.get("final_decision"),
                     "last_action": payload.get("last_action"),
+                    "last_exit_reason": payload.get("last_exit_reason"),
+                    "market_updated_at": payload.get("market_updated_at"),
+                    "state_persistent": payload.get("state_persistent"),
                     "balance": payload.get("balance"),
                     "equity": payload.get("equity"),
                     "realized_pnl": payload.get("realized_pnl"),
@@ -229,6 +232,9 @@ async def _autonomous_paper_loop() -> None:
                 }, sort_keys=True),
                 flush=True,
             )
+            # One durable line per simulated open/close (entry, SL, TP, exit, reason, P&L).
+            for trade_event in payload.get("events") or []:
+                print("PETRA_PAPER_TRADE " + json.dumps(trade_event, sort_keys=True), flush=True)
         except Exception as exc:
             print(f"PETRA_PAPER_CYCLE_ERROR {type(exc).__name__}: {exc}", flush=True)
         await asyncio.sleep(_paper_interval_seconds())
