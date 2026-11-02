@@ -31,8 +31,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
+from zoneinfo import ZoneInfo
 
 BAR_SECONDS = 300
+ET = ZoneInfo("America/New_York")
+MIN_STOP_FRAC = 0.0008  # same floor the production strategy uses
 WARMUP = 72  # matches the bridge's default PETRA_CTRADER_BAR_COUNT
 UI_CANDLES = 60  # candles handed to the engine for stop/target replay
 
@@ -51,6 +54,14 @@ class Variant:
     min_atr: float = 0.0              # skip quiet markets (ATR14 in index points)
     stop_mult: float = 1.0            # scale the strategy's stop distance
     rr: float | None = None           # target = rr * stop distance (None keeps the strategy's 1.6)
+    # --- alternative signal families
+    signal: str = "strategy"          # "strategy" | "donchian" | "orb"
+    n_lookback: int = 0               # donchian lookback in bars
+    et_hours_only: bool = False       # donchian: only US cash hours (09:30-16:00 ET)
+    or_minutes: int = 0               # orb: opening-range length in minutes
+    orb_rr: float = 1.6               # orb: target multiple of the range-based stop
+    orb_cutoff_et: int = 11 * 60 + 30  # orb: no entries after this ET minute-of-day
+    flat_et: int = 15 * 60 + 55       # orb: forced flat at/after this ET minute-of-day
 
 
 @dataclass
@@ -125,6 +136,90 @@ def synthetic_bars(n: int, seed: int = 7, start_price: float = 6800.0) -> list[d
     return out
 
 
+def et_parts(ts: int) -> tuple[Any, int]:
+    """(ET calendar date, ET minute-of-day) for a UTC epoch second; DST-aware."""
+    dt = datetime.fromtimestamp(ts, timezone.utc).astimezone(ET)
+    return dt.date(), dt.hour * 60 + dt.minute
+
+
+def _signal_dict(decision: str, price: float, stop: float | None, target: float | None, reason: str) -> dict[str, Any]:
+    return {"decision": decision, "confidence": 0.9 if decision != "NO_TRADE" else 0.0,
+            "confidence_floor": 0.68, "price": round(price, 5), "suggested_stop_loss": stop,
+            "suggested_take_profit": target, "reason": reason}
+
+
+def _atr14(bars: list[dict[str, float]]) -> float:
+    trs = [max(b["high"] - b["low"], abs(b["high"] - p["close"]), abs(b["low"] - p["close"]))
+           for p, b in zip(bars, bars[1:])]
+    sample = trs[-14:]
+    return sum(sample) / len(sample) if sample else 0.0
+
+
+def donchian_signal(bars: list[dict[str, float]], i: int, n: int, *, et_hours_only: bool = False,
+                    bar_close_ts: int | None = None) -> dict[str, Any]:
+    """Close beyond the previous n bars' extreme. Stop/target use the production strategy's geometry."""
+    last = bars[i]["close"]
+    if i < n + 14:
+        return _signal_dict("NO_TRADE", last, None, None, "warming up")
+    if et_hours_only and bar_close_ts is not None:
+        _, mod = et_parts(bar_close_ts)
+        if not (9 * 60 + 30 <= mod < 16 * 60):
+            return _signal_dict("NO_TRADE", last, None, None, "outside US cash hours")
+    prior = bars[i - n: i]
+    hi, lo = max(b["high"] for b in prior), min(b["low"] for b in prior)
+    if last > hi:
+        decision = "BUY"
+    elif last < lo:
+        decision = "SELL"
+    else:
+        return _signal_dict("NO_TRADE", last, None, None, "inside range")
+    atr = _atr14(bars[max(0, i - 40): i + 1])
+    stop_dist = max(atr * 1.25, last * MIN_STOP_FRAC)
+    sign = 1 if decision == "BUY" else -1
+    return _signal_dict(decision, last, round(last - sign * stop_dist, 5),
+                        round(last + sign * stop_dist * 1.6, 5), f"{n}-bar breakout")
+
+
+def orb_signal(bars: list[dict[str, float]], i: int, or_minutes: int, rr: float, *,
+               cutoff_et: int = 11 * 60 + 30, traded_day: Any = None) -> dict[str, Any]:
+    """Opening-range breakout. bars[i] is the bar whose close triggers the cycle."""
+    last = bars[i]["close"]
+    day, close_mod = et_parts(bars[i]["time"] + BAR_SECONDS)
+    open_mod = 9 * 60 + 30
+    range_end = open_mod + or_minutes
+    no = lambda why: _signal_dict("NO_TRADE", last, None, None, why)  # noqa: E731
+    if traded_day == day:
+        return no("already traded today")
+    if close_mod <= range_end:
+        return no("opening range still forming")  # the bar that completes the range cannot also break it
+    if close_mod > cutoff_et:
+        return no("past entry cutoff")
+    # opening-range bars: ET date == day and bar open in [09:30, 09:30 + or_minutes)
+    rng = []
+    for j in range(i, -1, -1):
+        d, m = et_parts(bars[j]["time"])
+        if d != day:
+            break
+        if open_mod <= m < range_end:
+            rng.append(bars[j])
+        elif m < open_mod:
+            break
+    expected = or_minutes // (BAR_SECONDS // 60)
+    if len(rng) < expected:
+        return no("incomplete opening range")
+    hi, lo = max(b["high"] for b in rng), min(b["low"] for b in rng)
+    if last > hi:
+        decision, stop_base = "BUY", lo
+    elif last < lo:
+        decision, stop_base = "SELL", hi
+    else:
+        return no("inside opening range")
+    stop_dist = max(abs(last - stop_base), last * MIN_STOP_FRAC)
+    sign = 1 if decision == "BUY" else -1
+    return _signal_dict(decision, last, round(last - sign * stop_dist, 5),
+                        round(last + sign * stop_dist * rr, 5), f"{or_minutes}m opening-range breakout")
+
+
 def apply_signal_filters(a: dict[str, Any], variant: Variant, *, closes_long: list[float] | None,
                          bar_close_ts: int) -> dict[str, Any]:
     """Return a copy of the analysis with the variant's signal filters / stop geometry applied."""
@@ -172,6 +267,16 @@ def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: f
     cd_any = cd_flip = 0
     open_age = 0
     clock = {"t": 0}
+    traded_day = None
+
+    def record(ev: dict[str, Any]) -> None:
+        pts = (ev["exit_price"] - ev["entry_price"]) * (1 if ev["side"] == "BUY" else -1)
+        opened = E._iso_to_epoch_seconds(ev["opened_at"]) or clock["t"]
+        trades.append(Trade(ev["side"], ev["entry_price"], ev["exit_price"], ev["exit_reason"],
+                            max(0, (clock["t"] - opened) // BAR_SECONDS), ev["quantity"],
+                            ev["pnl"] - spread_pts * ev["quantity"], pts - spread_pts,
+                            opened, clock["t"], abs(ev["entry_price"] - float(ev["stop_loss"]))))
+
     tmp = tempfile.TemporaryDirectory()
     base = Path(tmp.name)
     patches = [
@@ -187,7 +292,32 @@ def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: f
             window = bars[i - WARMUP + 1: i + 1]
             bar = bars[i]
             clock["t"] = bar["time"] + BAR_SECONDS - 1  # cycle at bar close, still inside bar i so bar i+1 is replayed
-            a = bridge._analyze(window)
+            bar_close_ts = bar["time"] + BAR_SECONDS
+            if variant.signal == "orb":
+                st = E._load_state()
+                held = st.get("position")
+                if held:
+                    held_day, _ = et_parts(E._iso_to_epoch_seconds(held["opened_at"]) or bar_close_ts)
+                    day_now, mod_now = et_parts(bar_close_ts)
+                    flat_price = None
+                    if day_now != held_day:
+                        flat_price = bars[i - 1]["close"]  # next day started first: last known price
+                    elif mod_now >= variant.flat_et:
+                        flat_price = bar["close"]
+                    if flat_price is not None:
+                        forced: list[dict[str, Any]] = []
+                        E._close_position(st, flat_price, "forced flat (end of session)", "TIME_EXIT", forced)
+                        E._save_state(st)
+                        for ev in forced:
+                            record(ev)
+            if variant.signal == "donchian":
+                a = donchian_signal(bars, i, variant.n_lookback, et_hours_only=variant.et_hours_only,
+                                    bar_close_ts=bar_close_ts)
+            elif variant.signal == "orb":
+                a = orb_signal(bars, i, variant.or_minutes, variant.orb_rr,
+                               cutoff_et=variant.orb_cutoff_et, traded_day=traded_day)
+            else:
+                a = bridge._analyze(window)
             longn = variant.htf_ema_period
             a = apply_signal_filters(
                 a, variant,
@@ -237,18 +367,14 @@ def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: f
             for ev in result["events"]:
                 if ev["event"] == "CLOSE":
                     closed_now = True
-                    pts = (ev["exit_price"] - ev["entry_price"]) * (1 if ev["side"] == "BUY" else -1)
-                    opened = E._iso_to_epoch_seconds(ev["opened_at"]) or clock["t"]
-                    trades.append(Trade(ev["side"], ev["entry_price"], ev["exit_price"], ev["exit_reason"],
-                                        max(0, (clock["t"] - opened) // BAR_SECONDS), ev["quantity"],
-                                        ev["pnl"] - spread_pts * ev["quantity"], pts - spread_pts,
-                                        opened, clock["t"],
-                                        abs(ev["entry_price"] - float(ev["stop_loss"]))))
+                    record(ev)
                     if variant.cooldown_bars:
                         cd_any = variant.cooldown_bars
                     if ev["exit_reason"] == "OPPOSITE_SIGNAL" and variant.flip_cooldown_bars:
                         cd_flip = variant.flip_cooldown_bars
             opened_now = any(ev["event"] == "OPEN" for ev in result["events"])
+            if opened_now and variant.signal == "orb":
+                traded_day = et_parts(bar_close_ts)[0]
             if opened_now:
                 open_age = 0
             elif result["position"]:
@@ -296,6 +422,7 @@ def metrics(trades: list[Trade], n_bars: int, seed: int = 11) -> dict[str, Any]:
         "flips": sum(1 for t in trades if t.exit_reason == "OPPOSITE_SIGNAL"),
         "stops": sum(1 for t in trades if t.exit_reason == "STOP_LOSS"),
         "targets": sum(1 for t in trades if t.exit_reason == "TAKE_PROFIT"),
+        "times": sum(1 for t in trades if t.exit_reason == "TIME_EXIT"),
     }
 
 
@@ -331,15 +458,31 @@ SIGNAL_GRID = [
 ]
 
 
+BREAKOUT_GRID = [
+    Variant("baseline"),
+    Variant("donchian 12", signal="donchian", n_lookback=12),
+    Variant("donchian 24", signal="donchian", n_lookback=24),
+    Variant("donchian 48", signal="donchian", n_lookback=48),
+    Variant("donchian 96", signal="donchian", n_lookback=96),
+    Variant("donchian 48, US cash hours", signal="donchian", n_lookback=48, et_hours_only=True),
+    Variant("ORB 15m rr1.0", signal="orb", or_minutes=15, orb_rr=1.0),
+    Variant("ORB 15m rr1.6", signal="orb", or_minutes=15, orb_rr=1.6),
+    Variant("ORB 30m rr1.0", signal="orb", or_minutes=30, orb_rr=1.0),
+    Variant("ORB 30m rr1.6", signal="orb", or_minutes=30, orb_rr=1.6),
+    Variant("ORB 60m rr1.0", signal="orb", or_minutes=60, orb_rr=1.0),
+    Variant("ORB 60m rr1.6", signal="orb", or_minutes=60, orb_rr=1.6),
+]
+
+
 def _row(name: str, m: dict[str, Any]) -> str:
     ci = "n/a" if m["ci95_lo"] is None else f"[{m['ci95_lo']:+.2f},{m['ci95_hi']:+.2f}]"
     return (f"{name:38s} {m['trades']:5d} {m['win_rate']*100:5.1f}% {m['avg_win']:+7.2f} {m['avg_loss']:+7.2f} "
             f"{m['expectancy_pts']:+7.3f} {m['expectancy_r']:+6.3f} {ci:>16s} {m['profit_factor']:5.2f} {m['total_pts']:+9.1f} "
-            f"{m['max_dd_pts']:7.1f} {m['trades_per_day']:5.1f} {m['flips']:4d}/{m['stops']:4d}/{m['targets']:4d}")
+            f"{m['max_dd_pts']:7.1f} {m['trades_per_day']:5.1f} {m['flips']:4d}/{m['stops']:4d}/{m['targets']:4d}/{m['times']:4d}")
 
 
 HEADER = (f"{'variant':38s} {'n':>5s} {'win%':>6s} {'avgWin':>7s} {'avgLoss':>7s} {'E[pts]':>7s} {'E[R]':>6s} "
-          f"{'95% CI (E)':>16s} {'PF':>5s} {'total':>9s} {'maxDD':>7s} {'/day':>5s} flip/stop/tgt")
+          f"{'95% CI (E)':>16s} {'PF':>5s} {'total':>9s} {'maxDD':>7s} {'/day':>5s} flip/stop/tgt/time")
 
 
 def run_grid(bars, grid, spread_pts, train_frac):
@@ -359,13 +502,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("csv")
     ap.add_argument("--train-frac", type=float, default=0.6)
+    ap.add_argument("--breakout", action="store_true", help="run the Donchian / opening-range grid")
     ap.add_argument("--signals", action="store_true", help="run the signal-experiment grid instead")
     ap.add_argument("--spread", type=float, default=0.5, help="index points per round trip")
     args = ap.parse_args(argv)
     bars = load_bars(args.csv)
     if len(bars) < 2000:
         print(f"WARNING: only {len(bars)} bars; results will be inconclusive", file=sys.stderr)
-    run_grid(bars, SIGNAL_GRID if args.signals else DEFAULT_GRID, args.spread, args.train_frac)
+    run_grid(bars, BREAKOUT_GRID if args.breakout else SIGNAL_GRID if args.signals else DEFAULT_GRID, args.spread, args.train_frac)
     print("\nRead TEST rows only for any decision; a variant is credible only if its CI95 excludes 0 "
           "and it beats baseline on TEST, not just TRAIN.")
     return 0

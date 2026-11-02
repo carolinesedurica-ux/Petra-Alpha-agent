@@ -139,6 +139,143 @@ class SignalFilterTest(unittest.TestCase):
         self.f(a, min_atr=99, stop_mult=2.0)
         self.assertEqual(a, before)
 
+from datetime import datetime as _dt
+from zoneinfo import ZoneInfo as _Z
+
+
+def ts_et(y, m, d, hh, mm):
+    return int(_dt(y, m, d, hh, mm, tzinfo=_Z("America/New_York")).timestamp())
+
+
+def day_bars(y, m, d, closes_by_slot=None, start=(9, 0), end=(16, 5), hi=7010.0, lo=7000.0):
+    """5-min bars for one ET day. Bars opening 09:30-09:40 form a 7000-7010 range."""
+    out, t = [], ts_et(y, m, d, *start)
+    stop = ts_et(y, m, d, *end)
+    overrides = closes_by_slot or {}
+    while t < stop:
+        et = _dt.fromtimestamp(t, _Z("America/New_York"))
+        key = (et.hour, et.minute)
+        close = overrides.get(key, 7005.0)
+        h = max(close, hi) if (9, 30) <= key < (9, 45) else max(close, 7006.0)
+        l = min(close, lo) if (9, 30) <= key < (9, 45) else min(close, 7004.0)
+        out.append({"time": t, "open": 7005.0, "high": h, "low": l, "close": close})
+        t += 300
+    return out
+
+
+class OrbSignalTest(unittest.TestCase):
+    DAYS = [(2026, 7, 15), (2026, 12, 15)]  # EDT and EST: US open is 13:30 vs 14:30 UTC
+
+    def idx(self, bars, hh, mm, y, m, d):
+        t = ts_et(y, m, d, hh, mm)
+        return next(i for i, b in enumerate(bars) if b["time"] == t)
+
+    def test_buy_breakout_after_range_with_range_stop_both_sides_of_dst(self):
+        for y, m, d in self.DAYS:
+            bars = day_bars(y, m, d, {(9, 45): 7012.0})
+            i = self.idx(bars, 9, 45, y, m, d)
+            sig = B.orb_signal(bars, i, 15, 1.6)
+            self.assertEqual(sig["decision"], "BUY", (y, m, d))
+            self.assertEqual(sig["suggested_stop_loss"], 7000.0)  # opposite side of the range
+            self.assertEqual(sig["suggested_take_profit"], round(7012.0 + 12.0 * 1.6, 5))
+
+    def test_sell_breakout_uses_range_high_as_stop(self):
+        y, m, d = self.DAYS[0]
+        bars = day_bars(y, m, d, {(9, 50): 6995.0})
+        sig = B.orb_signal(bars, self.idx(bars, 9, 50, y, m, d), 15, 1.0)
+        self.assertEqual(sig["decision"], "SELL")
+        self.assertEqual(sig["suggested_stop_loss"], 7010.0)  # opposite side of the range
+        self.assertEqual(sig["suggested_take_profit"], round(6995.0 - 15.0, 5))
+
+    def test_bar_completing_the_range_cannot_break_it(self):
+        y, m, d = self.DAYS[0]
+        bars = day_bars(y, m, d, {(9, 40): 7020.0})  # closes at 09:45 = range end
+        self.assertEqual(B.orb_signal(bars, self.idx(bars, 9, 40, y, m, d), 15, 1.6)["decision"], "NO_TRADE")
+
+    def test_no_signal_inside_range_before_open_after_cutoff_or_when_already_traded(self):
+        y, m, d = self.DAYS[0]
+        bars = day_bars(y, m, d, {(9, 50): 7008.0, (11, 30): 7050.0, (9, 55): 7050.0})
+        self.assertEqual(B.orb_signal(bars, self.idx(bars, 9, 50, y, m, d), 15, 1.6)["decision"], "NO_TRADE")
+        self.assertEqual(B.orb_signal(bars, self.idx(bars, 9, 0, y, m, d), 15, 1.6)["decision"], "NO_TRADE")
+        self.assertEqual(B.orb_signal(bars, self.idx(bars, 11, 30, y, m, d), 15, 1.6)["decision"], "NO_TRADE")
+        i = self.idx(bars, 9, 55, y, m, d)
+        self.assertEqual(B.orb_signal(bars, i, 15, 1.6)["decision"], "BUY")
+        self.assertEqual(B.orb_signal(bars, i, 15, 1.6, traded_day=B.et_parts(bars[i]["time"] + 300)[0])["decision"],
+                         "NO_TRADE")
+
+    def test_incomplete_range_is_skipped(self):
+        y, m, d = self.DAYS[0]
+        bars = [b for b in day_bars(y, m, d, {(9, 50): 7050.0})
+                if B.et_parts(b["time"])[1] != 9 * 60 + 35]  # drop one range bar
+        i = next(k for k, b in enumerate(bars) if B.et_parts(b["time"])[1] == 9 * 60 + 50)
+        self.assertEqual(B.orb_signal(bars, i, 15, 1.6)["decision"], "NO_TRADE")
+
+    def test_minimum_stop_floor_applies(self):
+        y, m, d = self.DAYS[0]
+        bars = day_bars(y, m, d, {(9, 45): 7010.5}, hi=7010.0, lo=7009.0)
+        for b in bars:
+            if B.et_parts(b["time"])[1] in (9 * 60 + 30, 9 * 60 + 35, 9 * 60 + 40):
+                b.update(high=7010.0, low=7009.0, close=7009.5)
+        sig = B.orb_signal(bars, self.idx(bars, 9, 45, y, m, d), 15, 1.0)
+        self.assertEqual(sig["decision"], "BUY")
+        self.assertAlmostEqual(7010.5 - sig["suggested_stop_loss"], 7010.5 * B.MIN_STOP_FRAC, places=3)
+
+
+class DonchianSignalTest(unittest.TestCase):
+    def bars(self, n=80, last_close=7000.0):
+        out = [{"time": 1_800_000_000 + k * 300, "open": 7000.0, "high": 7001.0, "low": 6999.0, "close": 7000.0}
+               for k in range(n)]
+        out[-1].update(close=last_close, high=max(last_close, 7001.0), low=min(last_close, 6999.0))
+        return out
+
+    def test_breakout_up_down_and_equal_is_not_a_break(self):
+        self.assertEqual(B.donchian_signal(self.bars(last_close=7002.0), 79, 24)["decision"], "BUY")
+        self.assertEqual(B.donchian_signal(self.bars(last_close=6998.0), 79, 24)["decision"], "SELL")
+        self.assertEqual(B.donchian_signal(self.bars(last_close=7001.0), 79, 24)["decision"], "NO_TRADE")
+        self.assertEqual(B.donchian_signal(self.bars(last_close=7000.0), 79, 24)["decision"], "NO_TRADE")
+
+    def test_warmup_and_geometry(self):
+        self.assertEqual(B.donchian_signal(self.bars(n=30, last_close=7002.0), 29, 24)["decision"], "NO_TRADE")
+        sig = B.donchian_signal(self.bars(last_close=7002.0), 79, 24)
+        stop_dist = 7002.0 - sig["suggested_stop_loss"]
+        self.assertGreaterEqual(stop_dist, 7002.0 * B.MIN_STOP_FRAC - 1e-6)
+        self.assertAlmostEqual(sig["suggested_take_profit"] - 7002.0, stop_dist * 1.6, places=3)
+
+    def test_us_cash_hours_filter(self):
+        bars = self.bars(last_close=7002.0)
+        inside = ts_et(2026, 7, 15, 10, 0)
+        outside = ts_et(2026, 7, 15, 3, 0)
+        self.assertEqual(B.donchian_signal(bars, 79, 24, et_hours_only=True, bar_close_ts=inside)["decision"], "BUY")
+        self.assertEqual(B.donchian_signal(bars, 79, 24, et_hours_only=True, bar_close_ts=outside)["decision"],
+                         "NO_TRADE")
+
+
+@unittest.skipUnless(AVAILABLE, "bridge dependencies (twisted, ctrader-open-api) not installed")
+class BreakoutIntegrationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.bars = B.synthetic_bars(3300, seed=5)
+        cls.orb = B.run_variant(cls.bars, B.Variant(signal="orb", or_minutes=15, orb_rr=1.6))
+        cls.don = B.run_variant(cls.bars, B.Variant(signal="donchian", n_lookback=24))
+
+    def test_orb_one_trade_per_day_inside_window_and_flat_same_day(self):
+        self.assertGreater(len(self.orb), 3)
+        days = [B.et_parts(t.opened_ts)[0] for t in self.orb]
+        self.assertEqual(len(days), len(set(days)), "more than one ORB trade in a day")
+        for t in self.orb:
+            d_open, m_open = B.et_parts(t.opened_ts)
+            d_close, m_close = B.et_parts(t.closed_ts)
+            self.assertTrue(9 * 60 + 30 + 15 <= m_open <= 11 * 60 + 35, m_open)
+            self.assertEqual(d_open, d_close, "ORB position held overnight")
+            self.assertNotEqual(t.exit_reason, "OPPOSITE_SIGNAL")
+            self.assertIn(t.exit_reason, {"STOP_LOSS", "TAKE_PROFIT", "TIME_EXIT"})
+
+    def test_donchian_trades_and_respects_geometry(self):
+        self.assertGreater(len(self.don), 20)
+        for t in self.don:
+            self.assertGreater(t.risk_pts, 0)
+
+
 
 if __name__ == "__main__":
     unittest.main()
