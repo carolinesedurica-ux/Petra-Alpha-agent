@@ -3,7 +3,7 @@ import os
 import hmac
 import traceback
 import httpx
-from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.responses import JSONResponse, HTMLResponse, Response
 from starlette.requests import Request
 
 # Make backend modules importable from the Vercel serverless function context.
@@ -144,6 +144,31 @@ async def _proxy_render(path: str, mode: str, timeout: float = 45.0) -> JSONResp
 @app.middleware("http")
 async def ctrader_runtime_status_middleware(request: Request, call_next):
     """Expose safe cTrader runtime, snapshot, paper state, and shadow analysis."""
+    if request.method == "GET" and request.url.path == "/api/ctrader/history.csv":
+        if not _ctrader_safe_runtime():
+            return JSONResponse(
+                status_code=503,
+                headers={"Cache-Control": "no-store, max-age=0"},
+                content={"detail": "cTrader demo dry-run safety gate is not satisfied"},
+            )
+        render_url = (os.environ.get("PETRA_CTRADER_RENDER_URL") or "").strip().rstrip("/")
+        if not render_url:
+            return JSONResponse(status_code=503, content={"detail": "Render bridge URL missing"})
+        try:
+            async with httpx.AsyncClient(timeout=180.0) as client:
+                r = await client.get(f"{render_url}/api/ctrader/history.csv")
+        except httpx.HTTPError as exc:
+            return JSONResponse(status_code=502, content={"detail": f"history proxy failed: {type(exc).__name__}"})
+        return Response(
+            content=r.content,
+            status_code=r.status_code,
+            media_type="text/csv",
+            headers={
+                "Cache-Control": "no-store, max-age=0",
+                "Content-Disposition": 'attachment; filename="us500_m5_ctrader_180d.csv"',
+            },
+        )
+
     if request.method == "GET" and request.url.path == "/api/ctrader/status":
         if _ctrader_safe_runtime():
             proxied = await _proxy_render("/api/ctrader/status", "ctrader_runtime_status", 20.0)
