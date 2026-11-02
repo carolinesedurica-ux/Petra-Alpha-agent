@@ -15,7 +15,7 @@ account is flat (the live bridge only marks a signal actionable when it is); fix
 spread cost in index points.
 
 Usage:
-  python backtest_paper.py bars.csv [--train-frac 0.6] [--spread 0.5]
+  python backtest_paper.py bars.csv [more.csv ...] [--train-frac 0.6] [--spread 0.5]
 CSV columns: time (epoch s/ms or ISO), open, high, low, close.
 """
 from __future__ import annotations
@@ -85,7 +85,9 @@ def _modules():
     return bridge, engine
 
 
-def load_bars(path: str) -> list[dict[str, float]]:
+def load_bars(path: "str | list[str]") -> list[dict[str, float]]:
+    """Load one CSV or several slices (e.g. three 1-year exports); bars are merged, de-duplicated by time and sorted."""
+    paths = [path] if isinstance(path, str) else list(path)
     def parse_time(raw: str) -> int:
         raw = raw.strip()
         try:
@@ -96,15 +98,16 @@ def load_bars(path: str) -> list[dict[str, float]]:
             return int((dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp())
 
     rows: dict[int, dict[str, float]] = {}
-    with open(path, newline="") as fh:
-        reader = csv.DictReader(fh)
-        reader.fieldnames = [f.strip().lower() for f in (reader.fieldnames or [])]
-        tkey = next((k for k in ("time", "timestamp", "datetime", "date") if k in reader.fieldnames), None)
-        if not tkey or not {"open", "high", "low", "close"} <= set(reader.fieldnames):
-            raise SystemExit("CSV needs columns: time, open, high, low, close")
-        for r in reader:
-            t = parse_time(r[tkey])
-            rows[t] = {"time": t, **{k: float(r[k]) for k in ("open", "high", "low", "close")}}
+    for one in paths:
+        with open(one, newline="") as fh:
+            reader = csv.DictReader(fh)
+            reader.fieldnames = [f.strip().lower() for f in (reader.fieldnames or [])]
+            tkey = next((k for k in ("time", "timestamp", "datetime", "date") if k in reader.fieldnames), None)
+            if not tkey or not {"open", "high", "low", "close"} <= set(reader.fieldnames):
+                raise SystemExit(f"{one}: CSV needs columns: time, open, high, low, close")
+            for r in reader:
+                t = parse_time(r[tkey])
+                rows[t] = {"time": t, **{k: float(r[k]) for k in ("open", "high", "low", "close")}}
     bars = [rows[t] for t in sorted(rows)]
     for b in bars:
         b["ts_minutes"] = b["time"] // 60
@@ -500,7 +503,7 @@ def run_grid(bars, grid, spread_pts, train_frac):
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("csv")
+    ap.add_argument("csv", nargs="+", help="one or more CSV slices; merged and de-duplicated")
     ap.add_argument("--train-frac", type=float, default=0.6)
     ap.add_argument("--breakout", action="store_true", help="run the Donchian / opening-range grid")
     ap.add_argument("--signals", action="store_true", help="run the signal-experiment grid instead")

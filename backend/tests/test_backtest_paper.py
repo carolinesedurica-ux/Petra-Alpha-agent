@@ -84,6 +84,35 @@ class BacktestMechanicsTest(unittest.TestCase):
         self.assertEqual(B.metrics([], 500)["trades"], 0)
 
 
+class LoadBarsTest(unittest.TestCase):
+    def write(self, d, name, rows):
+        path = f"{d}/{name}"
+        with open(path, "w") as fh:
+            fh.write("time,open,high,low,close\n")
+            for t, c in rows:
+                fh.write(f"{t},{c},{c + 1},{c - 1},{c}\n")
+        return path
+
+    def test_merges_slices_dedupes_overlap_and_sorts(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            newer = self.write(d, "newer.csv", [("2026-02-01T00:10:00Z", 12), ("2026-02-01T00:05:00Z", 11)])
+            older = self.write(d, "older.csv", [("2026-02-01T00:00:00Z", 10), ("2026-02-01T00:05:00Z", 99)])
+            bars = B.load_bars([newer, older])
+            self.assertEqual(B.load_bars(newer)[0]["close"], 11)  # sorted even for a single unsorted file
+        self.assertEqual([b["close"] for b in bars], [10, 99, 12])  # on a duplicate timestamp the later file wins
+        self.assertEqual([b["time"] for b in bars], sorted(b["time"] for b in bars))
+
+    def test_missing_columns_rejected(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            bad = f"{d}/bad.csv"
+            with open(bad, "w") as fh:
+                fh.write("time,open,close\n2026-02-01T00:00:00Z,1,2\n")
+            with self.assertRaises(SystemExit):
+                B.load_bars(bad)
+
+
 def _analysis(decision="BUY", price=7000.0, stop=6994.0, tp=7009.6, trend=0.5, atr=4.0):
     return {"decision": decision, "confidence": 0.8, "price": price, "suggested_stop_loss": stop,
             "suggested_take_profit": tp, "trend_strength": trend, "atr_14": atr}
