@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 app = FastAPI(title="Petra cTrader Bridge")
 ROOT = Path(__file__).resolve().parent
@@ -334,6 +334,38 @@ async def ctrader_analysis(authorization: str | None = Header(default=None)):
     payload["orders_enabled"] = False
     return JSONResponse(status_code=status_code, headers={"Cache-Control": "no-store"}, content=payload)
 
+
+
+
+@app.get("/api/ctrader/history.csv")
+async def ctrader_history_csv():
+    """Temporary public read-only US500 M5 history export from cTrader DEMO."""
+    ready, _ = _base_gate()
+    if not ready:
+        raise HTTPException(status_code=503, detail="cTrader demo read-only safety gate is not satisfied")
+    try:
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            [sys.executable, str(ROOT / "ctrader_history_export.py")],
+            capture_output=True,
+            text=True,
+            timeout=170,
+            env=os.environ.copy(),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="history export timed out")
+    if completed.returncode != 0 or not completed.stdout.startswith("time,open,high,low,close"):
+        detail = (completed.stderr or "history export failed")[-1200:]
+        raise HTTPException(status_code=502, detail=detail)
+    return PlainTextResponse(
+        content=completed.stdout,
+        media_type="text/csv",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'attachment; filename="us500_m5_ctrader_180d.csv"',
+        },
+    )
 
 @app.post("/api/ctrader/paper-cycle")
 async def ctrader_paper_cycle(authorization: str | None = Header(default=None)):
