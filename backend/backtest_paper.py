@@ -44,6 +44,13 @@ class Variant:
     flip_cooldown_bars: int = 0
     min_hold_bars: int = 0
     flip_conf_extra: float = 0.0
+    # --- signal-level experiments (applied to the analysis before the engine sees it)
+    min_trend_strength: float = 0.0   # require trend_strength >= this
+    htf_ema_period: int = 0           # require price on the same side of this long EMA (0 = off)
+    hours_utc: tuple[int, int] | None = None  # only enter when bar-close hour in [start, end)
+    min_atr: float = 0.0              # skip quiet markets (ATR14 in index points)
+    stop_mult: float = 1.0            # scale the strategy's stop distance
+    rr: float | None = None           # target = rr * stop distance (None keeps the strategy's 1.6)
 
 
 @dataclass
@@ -58,6 +65,7 @@ class Trade:
     points: float
     opened_ts: int = 0
     closed_ts: int = 0
+    risk_pts: float = 0.0
 
 
 def _modules():
@@ -117,6 +125,47 @@ def synthetic_bars(n: int, seed: int = 7, start_price: float = 6800.0) -> list[d
     return out
 
 
+def apply_signal_filters(a: dict[str, Any], variant: Variant, *, closes_long: list[float] | None,
+                         bar_close_ts: int) -> dict[str, Any]:
+    """Return a copy of the analysis with the variant's signal filters / stop geometry applied."""
+    out = dict(a)
+    decision = out["decision"]
+    if decision not in {"BUY", "SELL"}:
+        return out
+
+    def block() -> dict[str, Any]:
+        out.update(decision="NO_TRADE", confidence=0.0, suggested_stop_loss=None, suggested_take_profit=None)
+        return out
+
+    if variant.min_trend_strength and float(out.get("trend_strength", 0.0)) < variant.min_trend_strength:
+        return block()
+    if variant.min_atr and float(out.get("atr_14", 0.0)) < variant.min_atr:
+        return block()
+    if variant.hours_utc is not None:
+        hour = datetime.fromtimestamp(bar_close_ts, timezone.utc).hour
+        lo, hi = variant.hours_utc
+        if not (lo <= hour < hi):
+            return block()
+    if variant.htf_ema_period:
+        if closes_long is None or len(closes_long) < variant.htf_ema_period:
+            return block()
+        alpha = 2.0 / (variant.htf_ema_period + 1.0)
+        ema = closes_long[0]
+        for c in closes_long[1:]:
+            ema = alpha * c + (1.0 - alpha) * ema
+        last = closes_long[-1]
+        if (decision == "BUY" and last <= ema) or (decision == "SELL" and last >= ema):
+            return block()
+    if variant.stop_mult != 1.0 or variant.rr is not None:
+        price = float(out["price"])
+        stop_dist = abs(price - float(out["suggested_stop_loss"])) * variant.stop_mult
+        target_dist = stop_dist * (variant.rr if variant.rr is not None else 1.6)
+        sign = 1 if decision == "BUY" else -1
+        out["suggested_stop_loss"] = round(price - sign * stop_dist, 5)
+        out["suggested_take_profit"] = round(price + sign * target_dist, 5)
+    return out
+
+
 def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: float = 0.0) -> list[Trade]:
     bridge, E = _modules()
     trades: list[Trade] = []
@@ -139,6 +188,11 @@ def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: f
             bar = bars[i]
             clock["t"] = bar["time"] + BAR_SECONDS - 1  # cycle at bar close, still inside bar i so bar i+1 is replayed
             a = bridge._analyze(window)
+            longn = variant.htf_ema_period
+            a = apply_signal_filters(
+                a, variant,
+                closes_long=[b["close"] for b in bars[i - longn + 1: i + 1]] if longn and i + 1 >= longn else None,
+                bar_close_ts=bar["time"] + BAR_SECONDS)
             decision = a["decision"]
             conf = float(a["confidence"])
             floor = float(a["confidence_floor"])
@@ -188,7 +242,8 @@ def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: f
                     trades.append(Trade(ev["side"], ev["entry_price"], ev["exit_price"], ev["exit_reason"],
                                         max(0, (clock["t"] - opened) // BAR_SECONDS), ev["quantity"],
                                         ev["pnl"] - spread_pts * ev["quantity"], pts - spread_pts,
-                                        opened, clock["t"]))
+                                        opened, clock["t"],
+                                        abs(ev["entry_price"] - float(ev["stop_loss"]))))
                     if variant.cooldown_bars:
                         cd_any = variant.cooldown_bars
                     if ev["exit_reason"] == "OPPOSITE_SIGNAL" and variant.flip_cooldown_bars:
@@ -225,7 +280,9 @@ def metrics(trades: list[Trade], n_bars: int, seed: int = 11) -> dict[str, Any]:
         means = sorted(statistics.fmean(rng.choices(pts, k=n)) for _ in range(1000))
         ci = (means[25], means[974])
     days = max(1e-9, (n_bars - WARMUP) * BAR_SECONDS / 86400.0)
+    rs = [t.points / t.risk_pts for t in trades if t.risk_pts > 0]
     return {
+        "expectancy_r": statistics.fmean(rs) if rs else 0.0,
         "trades": n,
         "win_rate": (len(wins) / n) if n else 0.0,
         "avg_win": statistics.fmean(wins) if wins else 0.0,
@@ -257,14 +314,31 @@ DEFAULT_GRID = [
 ]
 
 
+SIGNAL_GRID = [
+    Variant("baseline"),
+    Variant("trend strength >= 0.4", min_trend_strength=0.4),
+    Variant("trend strength >= 0.7", min_trend_strength=0.7),
+    Variant("HTF EMA200 agrees", htf_ema_period=200),
+    Variant("US hours 13-20 UTC", hours_utc=(13, 20)),
+    Variant("EU+US hours 07-20 UTC", hours_utc=(7, 20)),
+    Variant("ATR >= 3.0", min_atr=3.0),
+    Variant("ATR >= 4.5", min_atr=4.5),
+    Variant("RR 1.0", rr=1.0),
+    Variant("RR 2.5", rr=2.5),
+    Variant("stop x1.5 (RR 1.6)", stop_mult=1.5),
+    Variant("stop x2.0 (RR 1.6)", stop_mult=2.0),
+    Variant("stop x1.0, RR 3.0", rr=3.0),
+]
+
+
 def _row(name: str, m: dict[str, Any]) -> str:
     ci = "n/a" if m["ci95_lo"] is None else f"[{m['ci95_lo']:+.2f},{m['ci95_hi']:+.2f}]"
     return (f"{name:38s} {m['trades']:5d} {m['win_rate']*100:5.1f}% {m['avg_win']:+7.2f} {m['avg_loss']:+7.2f} "
-            f"{m['expectancy_pts']:+7.3f} {ci:>16s} {m['profit_factor']:5.2f} {m['total_pts']:+9.1f} "
+            f"{m['expectancy_pts']:+7.3f} {m['expectancy_r']:+6.3f} {ci:>16s} {m['profit_factor']:5.2f} {m['total_pts']:+9.1f} "
             f"{m['max_dd_pts']:7.1f} {m['trades_per_day']:5.1f} {m['flips']:4d}/{m['stops']:4d}/{m['targets']:4d}")
 
 
-HEADER = (f"{'variant':38s} {'n':>5s} {'win%':>6s} {'avgWin':>7s} {'avgLoss':>7s} {'E[pts]':>7s} "
+HEADER = (f"{'variant':38s} {'n':>5s} {'win%':>6s} {'avgWin':>7s} {'avgLoss':>7s} {'E[pts]':>7s} {'E[R]':>6s} "
           f"{'95% CI (E)':>16s} {'PF':>5s} {'total':>9s} {'maxDD':>7s} {'/day':>5s} flip/stop/tgt")
 
 
@@ -285,12 +359,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("csv")
     ap.add_argument("--train-frac", type=float, default=0.6)
+    ap.add_argument("--signals", action="store_true", help="run the signal-experiment grid instead")
     ap.add_argument("--spread", type=float, default=0.5, help="index points per round trip")
     args = ap.parse_args(argv)
     bars = load_bars(args.csv)
     if len(bars) < 2000:
         print(f"WARNING: only {len(bars)} bars; results will be inconclusive", file=sys.stderr)
-    run_grid(bars, DEFAULT_GRID, args.spread, args.train_frac)
+    run_grid(bars, SIGNAL_GRID if args.signals else DEFAULT_GRID, args.spread, args.train_frac)
     print("\nRead TEST rows only for any decision; a variant is credible only if its CI95 excludes 0 "
           "and it beats baseline on TEST, not just TRAIN.")
     return 0
