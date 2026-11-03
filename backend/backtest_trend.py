@@ -25,10 +25,13 @@ import os
 import random
 import statistics
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 DAY = 86400
 TRADING_DAYS = 252
+# cTrader daily bars are stamped at the session OPEN, 21:00 or 22:00 UTC the previous evening, so the
+# Friday session is stamped Thursday night. Adding 3 hours maps every stamp onto the intended trading date.
+TRADING_DAY_SHIFT = 3 * 3600
 
 
 @dataclass(frozen=True)
@@ -89,8 +92,18 @@ class InstrumentRun:
     turnover: float              # sum of |dw|
 
 
+def trading_date(ts: int) -> date:
+    """Calendar date of the trading session a daily bar belongs to (see TRADING_DAY_SHIFT)."""
+    return (datetime.fromtimestamp(ts, timezone.utc) + timedelta(seconds=TRADING_DAY_SHIFT)).date()
+
+
 def _week_key(ts: int) -> tuple[int, int]:
-    iso = datetime.fromtimestamp(ts, timezone.utc).isocalendar()
+    """Trading week of a bar. A Sunday-dated session belongs to the week that follows, so each week runs
+    from the Sunday-evening open to the Friday close and its last bar is the Friday session."""
+    d = trading_date(ts)
+    if d.weekday() == 6:
+        d += timedelta(days=1)
+    iso = d.isocalendar()
     return iso[0], iso[1]
 
 
@@ -123,7 +136,7 @@ def run_instrument(symbol: str, series: list[tuple[int, float]], spec: Spec) -> 
     for t in range(1, n):
         if held != 0.0:
             gross[ts[t]] = gross.get(ts[t], 0.0) + held * rets[t]
-            days = (ts[t] - ts[t - 1]) / DAY
+            days = (trading_date(ts[t]) - trading_date(ts[t - 1])).days
             fin[ts[t]] = fin.get(ts[t], 0.0) + abs(held) * spec.financing_annual / 365.0 * days
         is_rebalance = t == n - 1 or _week_key(ts[t + 1]) != _week_key(ts[t])
         if is_rebalance:

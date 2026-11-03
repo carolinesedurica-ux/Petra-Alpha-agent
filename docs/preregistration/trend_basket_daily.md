@@ -44,3 +44,15 @@ Lookbacks 60 and 250; long-only variant; per-instrument table; yearly returns; m
 
 ## Integrity
 Run once per stage (development, then holdout). If a bug is found, both the original and corrected results are reported with what changed.
+
+---
+
+## Clarification made after the data arrived and before any return was computed (2026-11-03)
+
+This changes no rule; it fixes how "the last daily bar of each ISO week" is read for this broker's data format. It was prompted only by inspecting file timestamps, not by any performance number.
+
+- The broker's daily bars are stamped at the session **open** (21:00 or 22:00 UTC the previous evening), so the Friday session is stamped Thursday night and Monday's session is stamped Sunday night. Grouping by the raw stamp would have made the Monday session the last bar of a "week" and rebalanced on Mondays instead of Fridays.
+- Convention used: trading date = bar stamp + 3 hours. A Sunday-dated session (present in some 2011 to 2013 data) belongs to the following week. Each week therefore runs from the Sunday-evening open to the Friday close, and rebalancing happens at the Friday session close, as intended.
+- Financing accrues per calendar day between consecutive trading dates (a Friday to Monday gap accrues 3 days).
+- Data checks run before any return was computed: all 8 files have clean headers, sorted unique timestamps, no OHLC violations and no non-positive prices; history is 12.1 to 16.5 years per market (all above the 5-year threshold, so no alternates are used). Daily moves above 25% (flagged and kept, per the hygiene rule): SpotCrude 2020-03-08 (-27%) and 2020-04-20 (-35%), NatGas 2026-01-20 (+28%), XAGUSD 2026-01-29 (-26%).
+- Data fingerprint (sha256, first 12 characters): GER40 0111c2481fb8, NAS100 304c0e7a3dbb, NatGas d0d2b07c388b, SpotCrude be5f9bc129f5, UK100 a7fd19753da0, US500 07388d6abfc3, XAGUSD f21c0f7c8eec, XAUUSD 00012bb88aff. Source commit: 77d9677.

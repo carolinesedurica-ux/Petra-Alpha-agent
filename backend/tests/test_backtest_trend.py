@@ -163,6 +163,55 @@ class StrategyMechanicsTest(unittest.TestCase):
             self.assertAlmostEqual(a[d], b[d], places=12)  # before S is active, N = 1
 
 
+class TradingDayConventionTest(unittest.TestCase):
+    """Broker daily bars are stamped at the session open (21:00/22:00 UTC the evening before)."""
+
+    @staticmethod
+    def broker_series(n=700, seed=31):
+        """Same prices as make_series, but each weekday session is stamped 22:00 UTC the previous evening."""
+        out = []
+        for (t, c) in make_series(n, seed=seed):
+            out.append((t - 2 * 3600, c))  # trading date D stamped at 22:00 on D-1
+        return out
+
+    def test_friday_session_is_stamped_thursday_night_and_maps_to_friday(self):
+        thu_night = int(datetime(2020, 1, 9, 22, 0, tzinfo=timezone.utc).timestamp())  # Thursday 22:00 UTC
+        self.assertEqual(T.trading_date(thu_night).weekday(), 4)  # Friday
+        sun_night = int(datetime(2020, 1, 12, 22, 0, tzinfo=timezone.utc).timestamp())  # Sunday 22:00 UTC
+        self.assertEqual(T.trading_date(sun_night).weekday(), 0)  # Monday
+        for hour in (21, 22):
+            ts = int(datetime(2020, 7, 1, hour, 0, tzinfo=timezone.utc).timestamp())  # Wed night -> Thursday
+            self.assertEqual(T.trading_date(ts).weekday(), 3)
+
+    def test_sunday_dated_session_belongs_to_the_following_week(self):
+        sat_night = int(datetime(2012, 1, 14, 22, 0, tzinfo=timezone.utc).timestamp())  # old-style Saturday stamp
+        mon = int(datetime(2012, 1, 16, 12, 0, tzinfo=timezone.utc).timestamp())
+        self.assertEqual(T._week_key(sat_night), T._week_key(mon))
+
+    def test_rebalance_happens_at_the_friday_session_close(self):
+        series = self.broker_series()
+        run = T.run_instrument("A", series, T.Spec())
+        self.assertTrue(run.cost)
+        weekdays = {T.trading_date(d).weekday() for d in run.cost}
+        self.assertEqual(weekdays, {4})  # every rebalance is on a Friday session
+
+    def test_results_match_the_same_prices_with_midnight_stamps(self):
+        a = T.run_instrument("A", self.broker_series(), T.Spec())
+        b = T.run_instrument("A", make_series(700, seed=31), T.Spec())
+        self.assertEqual(len(a.cost), len(b.cost))
+        self.assertAlmostEqual(sum(a.gross.values()), sum(b.gross.values()), places=10)
+        self.assertAlmostEqual(sum(a.cost.values()), sum(b.cost.values()), places=12)
+        self.assertAlmostEqual(sum(a.fin.values()), sum(b.fin.values()), places=12)
+
+    def test_raw_stamp_grouping_would_have_been_wrong(self):
+        """Documents the bug this convention fixes: grouping by raw stamp puts the rebalance on Monday sessions."""
+        series = self.broker_series()
+        ts = [t for t, _ in series]
+        raw_last = [t for i, t in enumerate(ts[:-1])
+                    if datetime.fromtimestamp(ts[i + 1], timezone.utc).isocalendar()[:2] != datetime.fromtimestamp(t, timezone.utc).isocalendar()[:2]]
+        self.assertEqual({T.trading_date(t).weekday() for t in raw_last}, {0})  # Monday: not what was intended
+
+
 class StatsTest(unittest.TestCase):
     def test_sharpe_drawdown_summary(self):
         self.assertEqual(T.sharpe([0.0] * 10), 0.0)
