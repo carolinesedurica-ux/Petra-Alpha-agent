@@ -56,3 +56,27 @@ This changes no rule; it fixes how "the last daily bar of each ISO week" is read
 - Financing accrues per calendar day between consecutive trading dates (a Friday to Monday gap accrues 3 days).
 - Data checks run before any return was computed: all 8 files have clean headers, sorted unique timestamps, no OHLC violations and no non-positive prices; history is 12.1 to 16.5 years per market (all above the 5-year threshold, so no alternates are used). Daily moves above 25% (flagged and kept, per the hygiene rule): SpotCrude 2020-03-08 (-27%) and 2020-04-20 (-35%), NatGas 2026-01-20 (+28%), XAGUSD 2026-01-29 (-26%).
 - Data fingerprint (sha256, first 12 characters): GER40 0111c2481fb8, NAS100 304c0e7a3dbb, NatGas d0d2b07c388b, SpotCrude be5f9bc129f5, UK100 a7fd19753da0, US500 07388d6abfc3, XAGUSD f21c0f7c8eec, XAUUSD 00012bb88aff. Source commit: 77d9677.
+
+---
+
+## Result: development stage (appended after the run; everything above was committed before it)
+
+Run once on 2026-11-03 with code commit ebe0976 and the data fingerprints above. Development period = 2010-05 to 2022-09-18 (3,072 portfolio days, about 12.2 years), 8 markets, base costs (5 bps one-way, 3% per year financing on gross notional).
+
+| | Result |
+|---|---|
+| Net annual return | +0.03% per year |
+| Annualised volatility | 6.26% |
+| **Net Sharpe** | **+0.01** |
+| Gross (pre-cost) return / Sharpe | +1.98% per year / +0.32 |
+| Maximum drawdown (net) | 23.8% |
+
+Where the gross return went (annualised, development period): transaction costs 0.30%, financing 1.65%.
+
+**Criterion A (development Sharpe >= 0.3): FAIL.** Under the pre-registered rule any failed criterion means stop.
+
+Consequences, as pre-registered:
+- The overall outcome is **FAIL**. The holdout (2022-09-19 onward) was **not** run and remains untouched, because the result cannot change a failed overall outcome.
+- No re-tuning of lookback, rebalance period, sizing or cost assumptions on this data, and no choosing a subset of markets afterwards.
+- Descriptive note (does not change the verdict): even before costs the Sharpe is only 0.32. Over 12.2 years the standard error of an annual Sharpe is roughly 0.29, so the gross result is not distinguishable from zero. The financing figure is an assumption (the broker's real swap rates were not available); a different rate would move the net number, but it could not turn a gross Sharpe of 0.32 into convincing evidence.
+- This test covered one fixed specification. It says nothing about other lookbacks, other markets or other approaches, none of which were tried.
