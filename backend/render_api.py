@@ -338,19 +338,25 @@ async def ctrader_analysis(authorization: str | None = Header(default=None)):
 
 
 @app.get("/api/ctrader/history.csv")
-async def ctrader_history_csv():
+async def ctrader_history_csv(days: int = 180, end_days_ago: int = 0):
     """Temporary public read-only US500 M5 history export from cTrader DEMO."""
     ready, _ = _base_gate()
     if not ready:
         raise HTTPException(status_code=503, detail="cTrader demo read-only safety gate is not satisfied")
+    days = max(90, min(1200, int(days)))
+    end_days_ago = max(0, min(3650, int(end_days_ago)))
+    run_env = os.environ.copy()
+    run_env["PETRA_HISTORY_DAYS"] = str(days)
+    run_env["PETRA_HISTORY_END_DAYS_AGO"] = str(end_days_ago)
+    run_env["PETRA_HISTORY_TIMEOUT_SECONDS"] = "900"
     try:
         completed = await asyncio.to_thread(
             subprocess.run,
             [sys.executable, str(ROOT / "ctrader_history_export.py")],
             capture_output=True,
             text=True,
-            timeout=170,
-            env=os.environ.copy(),
+            timeout=620,
+            env=run_env,
             check=False,
         )
     except subprocess.TimeoutExpired:
@@ -363,7 +369,7 @@ async def ctrader_history_csv():
         media_type="text/csv",
         headers={
             "Cache-Control": "no-store",
-            "Content-Disposition": 'attachment; filename="us500_m5_ctrader_180d.csv"',
+            "Content-Disposition": f'attachment; filename="us500_m5_ctrader_{days}d_end{end_days_ago}.csv"',
         },
     )
 
