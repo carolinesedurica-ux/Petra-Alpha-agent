@@ -41,3 +41,31 @@ Long/short split, monthly breakdown, exit reasons (stop, target, time exit), res
 
 ## Integrity
 Run once. If a code or data bug is found, report both the original and the corrected result and say what changed.
+
+---
+
+## Result (appended after the run; everything above this line was committed in 72a5fbf before it)
+
+Run once on 2026-11-03 with the specification above, code commit 867ae85, data fingerprint `c48ce9980422a585`.
+
+**Pre-registered outcome: NOT SUPPORTED.**
+
+| | |
+|---|---|
+| Window | trades opened 2026-08-19 to 2026-11-02 |
+| Trades | 53 (in the expected 50 to 54 range) |
+| Mean P&L per trade after 0.5 pt spread | **-3.74 pts** (SD 21.0, SE 2.88) |
+| One-sided 95% lower bound | -8.26 |
+| E[R] | -0.142 |
+| Win rate / profit factor | 39.6% / 0.68 |
+| Total / max drawdown | -198 pts / 269 pts |
+| Exits | 27 stop, 13 target, 13 time exit |
+| Long / short | n=22, -3.09 / n=31, -4.20 |
+| At 1.0 pt spread | mean -4.24, lower bound -8.76 |
+
+Context (not decision-bearing):
+- Earlier 28 Apr to 18 Aug 2026 trades (already seen): n=78, mean -2.54. Pooled with this window: n=131, mean -3.02, 95% CI [-7.22, +1.30].
+- All 819 trades pooled, including the 688 that selected this variant: mean +1.25. This figure is selection-biased and shown only for context.
+- The earlier +2.06 pts/trade (n=688) and the later -3.02 pts/trade (n=131) differ by about 2 standard errors. The earlier edge did not persist in the most recent six months; it may have been a regime effect or chance.
+
+Consequence under the pre-registered rule: this specific variant is dropped unless there is a new, independent rationale. It is not to be re-tuned on this data. No result here authorises live trading.
