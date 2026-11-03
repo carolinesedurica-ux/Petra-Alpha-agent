@@ -338,17 +338,34 @@ async def ctrader_analysis(authorization: str | None = Header(default=None)):
 
 
 @app.get("/api/ctrader/history.csv")
-async def ctrader_history_csv(days: int = 180, end_days_ago: int = 0):
-    """Temporary public read-only US500 M5 history export from cTrader DEMO."""
+async def ctrader_history_csv(
+    days: int = 180,
+    end_days_ago: int = 0,
+    symbol: str = "US500",
+    period: str = "M5",
+    list_symbols: bool = False,
+):
+    """Temporary public read-only history/symbol export from cTrader DEMO."""
     ready, _ = _base_gate()
     if not ready:
         raise HTTPException(status_code=503, detail="cTrader demo read-only safety gate is not satisfied")
-    days = max(90, min(1200, int(days)))
+
+    days = max(90, min(6000, int(days)))
     end_days_ago = max(0, min(3650, int(end_days_ago)))
+    symbol = (symbol or "US500").strip()
+    period = (period or "M5").strip().upper()
+
     run_env = os.environ.copy()
     run_env["PETRA_HISTORY_DAYS"] = str(days)
     run_env["PETRA_HISTORY_END_DAYS_AGO"] = str(end_days_ago)
     run_env["PETRA_HISTORY_TIMEOUT_SECONDS"] = "900"
+    run_env["PETRA_HISTORY_SYMBOL"] = symbol
+    run_env["PETRA_HISTORY_PERIOD"] = period
+    if list_symbols:
+        run_env["PETRA_HISTORY_LIST_SYMBOLS"] = "1"
+    else:
+        run_env.pop("PETRA_HISTORY_LIST_SYMBOLS", None)
+
     try:
         completed = await asyncio.to_thread(
             subprocess.run,
@@ -361,15 +378,19 @@ async def ctrader_history_csv(days: int = 180, end_days_ago: int = 0):
         )
     except subprocess.TimeoutExpired:
         raise HTTPException(status_code=504, detail="history export timed out")
-    if completed.returncode != 0 or not completed.stdout.startswith("time,open,high,low,close"):
+
+    expected_header = "symbol,id,description" if list_symbols else "time,open,high,low,close"
+    if completed.returncode != 0 or not completed.stdout.startswith(expected_header):
         detail = (completed.stderr or "history export failed")[-1200:]
         raise HTTPException(status_code=502, detail=detail)
+
+    filename = "symbols.csv" if list_symbols else f"{symbol.lower()}_{period.lower()}_ctrader_{days}d_end{end_days_ago}.csv"
     return PlainTextResponse(
         content=completed.stdout,
         media_type="text/csv",
         headers={
             "Cache-Control": "no-store",
-            "Content-Disposition": f'attachment; filename="us500_m5_ctrader_{days}d_end{end_days_ago}.csv"',
+            "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
 
