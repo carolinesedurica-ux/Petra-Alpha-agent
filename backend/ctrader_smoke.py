@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import subprocess
 import sys
 from typing import Any
 
@@ -187,6 +188,33 @@ def _disconnected(_client, reason) -> None:
         _fail(f"cTrader disconnected before smoke test completed: {text}")
 
 
+def _log_symbol_list_if_enabled() -> None:
+    """One-shot read-only diagnostic: print enabled cTrader symbols to Render logs."""
+    enabled = (os.environ.get("PETRA_LOG_SYMBOLS_ON_STARTUP") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return
+    env = os.environ.copy()
+    env["PETRA_HISTORY_LIST_SYMBOLS"] = "1"
+    env["PETRA_HISTORY_TIMEOUT_SECONDS"] = "120"
+    try:
+        completed = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), "ctrader_history_export.py")],
+            capture_output=True,
+            text=True,
+            timeout=130,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log.error("PETRA_SYMBOL_EXPORT timed out")
+        return
+    if completed.returncode != 0:
+        log.error("PETRA_SYMBOL_EXPORT failed: %s", (completed.stderr or "unknown error")[-1000:])
+        return
+    for line in completed.stdout.splitlines():
+        print(f"PETRA_SYMBOL {line}", flush=True)
+
+
 def _start_render_api_if_enabled() -> None:
     if (os.environ.get("PETRA_RUN_API") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         return
@@ -224,6 +252,7 @@ def main() -> int:
     if state.failed:
         return 1
 
+    _log_symbol_list_if_enabled()
     _start_render_api_if_enabled()
     return 0
 
