@@ -392,7 +392,8 @@ def run_variant(bars: list[dict[str, float]], variant: Variant, *, spread_pts: f
     return trades
 
 
-def metrics(trades: list[Trade], n_bars: int, seed: int = 11) -> dict[str, Any]:
+def metrics(trades: list[Trade], n_bars: int, seed: int = 11, *, ci_level: float = 0.95,
+            resamples: int = 1000) -> dict[str, Any]:
     n = len(trades)
     pts = [t.points for t in trades]
     wins = [p for p in pts if p > 0]
@@ -406,8 +407,9 @@ def metrics(trades: list[Trade], n_bars: int, seed: int = 11) -> dict[str, Any]:
     ci = (None, None)
     if n >= 10:
         rng = random.Random(seed)
-        means = sorted(statistics.fmean(rng.choices(pts, k=n)) for _ in range(1000))
-        ci = (means[25], means[974])
+        means = sorted(statistics.fmean(rng.choices(pts, k=n)) for _ in range(resamples))
+        lo_i = int(((1.0 - ci_level) / 2.0) * resamples)
+        ci = (means[lo_i], means[resamples - 1 - lo_i])
     days = max(1e-9, (n_bars - WARMUP) * BAR_SECONDS / 86400.0)
     rs = [t.points / t.risk_pts for t in trades if t.risk_pts > 0]
     return {
@@ -417,7 +419,8 @@ def metrics(trades: list[Trade], n_bars: int, seed: int = 11) -> dict[str, Any]:
         "avg_win": statistics.fmean(wins) if wins else 0.0,
         "avg_loss": statistics.fmean(losses) if losses else 0.0,
         "expectancy_pts": statistics.fmean(pts) if n else 0.0,
-        "ci95_lo": ci[0], "ci95_hi": ci[1],
+        "ci95_lo": ci[0], "ci95_hi": ci[1],  # kept as aliases; they hold the ci_level interval
+        "ci_lo": ci[0], "ci_hi": ci[1], "ci_level": ci_level,
         "profit_factor": (gross_win / gross_loss) if gross_loss > 0 else float("inf") if gross_win else 0.0,
         "total_pts": sum(pts),
         "max_dd_pts": mdd,
@@ -427,6 +430,19 @@ def metrics(trades: list[Trade], n_bars: int, seed: int = 11) -> dict[str, Any]:
         "targets": sum(1 for t in trades if t.exit_reason == "TAKE_PROFIT"),
         "times": sum(1 for t in trades if t.exit_reason == "TIME_EXIT"),
     }
+
+
+def period_breakdown(trades: list[Trade], periods: list[tuple[str, int, int]]) -> list[dict[str, Any]]:
+    """Per-period trade count and expectancy; periods are (label, start_ts, end_ts), end exclusive.
+    A trade belongs to the period in which it was opened."""
+    out = []
+    for label, lo, hi in periods:
+        sel = [t for t in trades if lo <= t.opened_ts < hi]
+        rs = [t.points / t.risk_pts for t in sel if t.risk_pts > 0]
+        out.append({"label": label, "trades": len(sel),
+                    "expectancy_pts": statistics.fmean([t.points for t in sel]) if sel else 0.0,
+                    "expectancy_r": statistics.fmean(rs) if rs else 0.0})
+    return out
 
 
 DEFAULT_GRID = [

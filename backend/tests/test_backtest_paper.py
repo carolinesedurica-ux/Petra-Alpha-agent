@@ -71,6 +71,28 @@ class BacktestMechanicsTest(unittest.TestCase):
         for a, b in zip(self.base, costly):
             self.assertAlmostEqual(a.points - b.points, 0.5, places=6)
 
+    def test_wider_ci_level_gives_wider_interval(self):
+        def tr(p):
+            return B.Trade("BUY", 100, 100 + p, "X", 1, 1.0, p, p, 0, 0, 5.0)
+        trades = [tr(p) for p in ([3, -2, 4, -1, 2, -3, 5, -2, 1, -1] * 20)]
+        m95 = B.metrics(trades, 5000)
+        m99 = B.metrics(trades, 5000, ci_level=0.99, resamples=2000)
+        self.assertLess(m99["ci_lo"], m95["ci_lo"])
+        self.assertGreater(m99["ci_hi"], m95["ci_hi"])
+        self.assertEqual(m99["ci_level"], 0.99)
+        self.assertTrue(m99["ci_lo"] <= m99["expectancy_pts"] <= m99["ci_hi"])
+
+    def test_period_breakdown_partitions_by_open_time(self):
+        def tr(opened, p):
+            return B.Trade("BUY", 100, 100 + p, "X", 1, 1.0, p, p, opened, opened + 300, 5.0)
+        trades = [tr(10, 5.0), tr(20, -1.0), tr(110, 2.0), tr(250, -4.0)]
+        rows = B.period_breakdown(trades, [("a", 0, 100), ("b", 100, 200), ("c", 200, 300)])
+        self.assertEqual([r["trades"] for r in rows], [2, 1, 1])
+        self.assertAlmostEqual(rows[0]["expectancy_pts"], 2.0)
+        self.assertAlmostEqual(rows[0]["expectancy_r"], 0.4)
+        self.assertAlmostEqual(rows[2]["expectancy_r"], -0.8)
+        self.assertEqual(B.period_breakdown([], [("x", 0, 1)])[0]["trades"], 0)
+
     def test_metrics_math(self):
         def tr(p):
             return B.Trade("BUY", 100, 100 + p, "X", 1, 1.0, p, p)
