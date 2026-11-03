@@ -33,8 +33,14 @@ from twisted.internet import reactor
 from ctrader_settings import CTraderSettingsError, load_ctrader_settings
 
 TARGET_SYMBOL = (os.environ.get("PETRA_HISTORY_SYMBOL") or "US500").strip()
-DAYS = max(90, min(200, int(os.environ.get("PETRA_HISTORY_DAYS") or "180")))
+MAX_DAYS = 1200
+DAYS = max(90, min(MAX_DAYS, int(os.environ.get("PETRA_HISTORY_DAYS") or "180")))
+# Export an older slice: window ends this many days before now (default 0 = up to now).
+END_DAYS_AGO = max(0, min(3650, int(os.environ.get("PETRA_HISTORY_END_DAYS_AGO") or "0")))
+# Overall time limit. The default matches the old fixed 150 s; raise it for multi-year exports.
+TIMEOUT_SECONDS = max(60, min(3600, int(os.environ.get("PETRA_HISTORY_TIMEOUT_SECONDS") or "150")))
 WINDOW_DAYS = 7
+DAY_MS = 24 * 60 * 60 * 1000
 
 
 def _norm(value: str) -> str:
@@ -46,8 +52,8 @@ class State:
         self.failed = False
         self.symbol_id = None
         self.rows = {}
-        self.window_end_ms = int(time.time() * 1000)
-        self.start_ms = self.window_end_ms - DAYS * 24 * 60 * 60 * 1000
+        self.window_end_ms = int(time.time() * 1000) - END_DAYS_AGO * DAY_MS
+        self.start_ms = self.window_end_ms - DAYS * DAY_MS
 
 
 state = State()
@@ -176,10 +182,18 @@ def main():
     client.setDisconnectedCallback(disconnected)
     client.setMessageReceivedCallback(on_message)
     client.startService()
-    reactor.callLater(150, lambda: fail("history export timed out"))
+    reactor.callLater(TIMEOUT_SECONDS, lambda: fail("history export timed out"))
     reactor.run()
     if state.failed:
         return 1
+    if state.rows:
+        first, last = min(state.rows) * 60, max(state.rows) * 60
+        print(json.dumps({
+            "status": "ok", "symbol": TARGET_SYMBOL, "bars": len(state.rows),
+            "first": datetime.fromtimestamp(first, tz=timezone.utc).isoformat(),
+            "last": datetime.fromtimestamp(last, tz=timezone.utc).isoformat(),
+            "requested_days": DAYS, "end_days_ago": END_DAYS_AGO,
+        }), file=sys.stderr, flush=True)
     out=io.StringIO()
     w=csv.writer(out, lineterminator="\n")
     w.writerow(["time","open","high","low","close"])
