@@ -156,7 +156,7 @@ async def ctrader_runtime_status_middleware(request: Request, call_next):
             return JSONResponse(status_code=503, content={"detail": "Render bridge URL missing"})
         try:
             async with httpx.AsyncClient(timeout=180.0) as client:
-                r = await client.get(f"{render_url}/api/ctrader/history.csv")
+                r = await client.get(f"{render_url}/api/ctrader/history.csv?{request.url.query}")
         except httpx.HTTPError as exc:
             return JSONResponse(status_code=502, content={"detail": f"history proxy failed: {type(exc).__name__}"})
         return Response(
