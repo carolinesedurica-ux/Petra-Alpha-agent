@@ -215,6 +215,36 @@ def _log_symbol_list_if_enabled() -> None:
         print(f"PETRA_SYMBOL {line}", flush=True)
 
 
+def _run_cost_probe_if_enabled() -> None:
+    """One-shot read-only cost sample, emitted to Render logs with a session label."""
+    label = (os.environ.get("PETRA_COST_PROBE_LABEL") or "").strip().lower()
+    if label not in {"asia", "london", "us"}:
+        return
+    env = os.environ.copy()
+    env["PETRA_COST_SAMPLE_SECONDS"] = os.environ.get("PETRA_COST_SAMPLE_SECONDS") or "120"
+    env["PETRA_COST_TIMEOUT_SECONDS"] = os.environ.get("PETRA_COST_TIMEOUT_SECONDS") or "300"
+    try:
+        completed = subprocess.run(
+            [sys.executable, os.path.join(os.path.dirname(__file__), "ctrader_cost_probe.py")],
+            capture_output=True,
+            text=True,
+            timeout=330,
+            env=env,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        log.error("PETRA_COST_PROBE_STATUS %s timed_out", label)
+        return
+    if completed.returncode != 0:
+        log.error("PETRA_COST_PROBE_STATUS %s failed: %s", label, (completed.stderr or "unknown error")[-1500:])
+        return
+    for line in completed.stdout.splitlines():
+        print(f"PETRA_COST_CSV {label} {line}", flush=True)
+    status_line = (completed.stderr or "").strip().splitlines()
+    if status_line:
+        print(f"PETRA_COST_PROBE_STATUS {label} {status_line[-1]}", flush=True)
+
+
 def _start_render_api_if_enabled() -> None:
     if (os.environ.get("PETRA_RUN_API") or "").strip().lower() not in {"1", "true", "yes", "on"}:
         return
@@ -253,6 +283,7 @@ def main() -> int:
         return 1
 
     _log_symbol_list_if_enabled()
+    _run_cost_probe_if_enabled()
     _start_render_api_if_enabled()
     return 0
 
