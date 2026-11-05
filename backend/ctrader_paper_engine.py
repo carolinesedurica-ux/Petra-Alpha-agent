@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,35 @@ STARTING_BALANCE = float(os.environ.get("PETRA_CTRADER_PAPER_STARTING_BALANCE") 
 MAX_RISK_PCT = max(0.05, min(2.0, float(os.environ.get("PETRA_CTRADER_PAPER_RISK_PCT") or "0.50")))
 MIN_POSITION_NOTIONAL = max(1.0, float(os.environ.get("PETRA_CTRADER_PAPER_MIN_NOTIONAL") or "10"))
 MAX_POSITION_NOTIONAL = max(MIN_POSITION_NOTIONAL, float(os.environ.get("PETRA_CTRADER_PAPER_MAX_NOTIONAL") or "25"))
+# Paper-only realism knobs. Neither can enable order placement.
+BAR_SECONDS = 300  # M5 bars from the autonomous bridge
+STOP_SLIPPAGE = max(0.0, float(os.environ.get("PETRA_CTRADER_PAPER_STOP_SLIPPAGE") or "0"))
+JOURNAL_FILE = Path(
+    os.environ.get("PETRA_CTRADER_PAPER_JOURNAL_FILE")
+    or STATE_FILE.with_name(STATE_FILE.stem + "_journal.jsonl")
+)
+
+EXIT_STOP_LOSS = "STOP_LOSS"
+EXIT_TAKE_PROFIT = "TAKE_PROFIT"
+EXIT_OPPOSITE_SIGNAL = "OPPOSITE_SIGNAL"
+EXIT_TEXT = {
+    EXIT_STOP_LOSS: "paper stop-loss reached",
+    EXIT_TAKE_PROFIT: "paper take-profit reached",
+}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _state_is_persistent(path: Path | None = None) -> bool:
+    """False when the ledger lives under the OS temp dir (wiped on restart/redeploy)."""
+    target = Path(path or STATE_FILE)
+    try:
+        resolved = str(target.resolve())
+    except OSError:
+        resolved = str(target)
+    return not (resolved.startswith("/tmp/") or resolved.startswith(tempfile.gettempdir() + os.sep))
 
 
 def _profile() -> dict[str, Any]:
@@ -92,10 +122,32 @@ def _load_state() -> dict[str, Any]:
 
 
 def _save_state(state: dict[str, Any]) -> None:
-    STATE_FILE.write_text(json.dumps(state, sort_keys=True))
+    """Atomic write so a crash mid-save cannot corrupt the ledger."""
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(state, sort_keys=True))
+    os.replace(tmp, STATE_FILE)
 
 
-def _close_position(state: dict[str, Any], price: float, reason: str) -> None:
+def _journal(events: list[dict[str, Any]]) -> None:
+    """Append-only trade journal; best effort (the Render log line is the durable copy)."""
+    if not events:
+        return
+    try:
+        with JOURNAL_FILE.open("a", encoding="utf-8") as fh:
+            for event in events:
+                fh.write(json.dumps(event, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def _close_position(
+    state: dict[str, Any],
+    price: float,
+    reason: str,
+    code: str,
+    events: list[dict[str, Any]] | None = None,
+    trigger_bar_time: int | None = None,
+) -> None:
     pos = state.get("position")
     if not pos:
         return
@@ -109,24 +161,81 @@ def _close_position(state: dict[str, Any], price: float, reason: str) -> None:
         state["wins"] = int(state.get("wins", 0)) + 1
     else:
         state["losses"] = int(state.get("losses", 0)) + 1
-    closed_at = datetime.now(timezone.utc).isoformat()
+    closed_at = _now().isoformat()
     closed = {
         "side": side,
         "symbol": pos.get("symbol") or "US500",
         "entry_price": entry,
         "exit_price": price,
+        "stop_loss": pos.get("stop_loss"),
+        "take_profit": pos.get("take_profit"),
         "quantity": qty,
         "notional_usd": pos.get("notional_usd"),
         "pnl": round(pnl, 6),
         "reason": reason,
+        "exit_reason": code,
         "opened_at": pos.get("opened_at"),
         "closed_at": closed_at,
     }
+    if trigger_bar_time is not None:
+        closed["trigger_bar_time"] = int(trigger_bar_time)
     state["last_action"] = "CLOSE"
     state["last_close"] = closed
+    state["last_exit_reason"] = code
     history = list(state.get("trade_history") or [])
     state["trade_history"] = [closed, *history][:20]
     state["position"] = None
+    if events is not None:
+        events.append({"event": "CLOSE", **closed, "balance_after": state["balance"]})
+
+
+def _find_protective_exit(
+    pos: dict[str, Any], candles: list[dict[str, Any]] | None
+) -> tuple[str, float, int] | None:
+    """Replay M5 bars after the entry bar against the position's stop/target.
+
+    Returns (exit_code, fill_price, bar_time) for the first bar that touches a level.
+    Conservative rules: if one bar touches both levels the stop wins (unless the bar
+    already opened beyond the target); a stop is filled at the bar open when the bar
+    gaps through it, plus optional STOP_SLIPPAGE against the position; a target fills
+    at the target price (no price improvement).
+    """
+    if not candles:
+        return None
+    opened_ts = _iso_to_epoch_seconds(pos.get("opened_at"))
+    if opened_ts is None:
+        return None
+    entry_bar = (opened_ts // BAR_SECONDS) * BAR_SECONDS
+    side = pos["side"]
+    stop = float(pos["stop_loss"])
+    target = float(pos["take_profit"])
+    for candle in sorted(candles, key=lambda c: int(c.get("time") or 0)):
+        bar_time = int(candle.get("time") or 0)
+        if bar_time <= entry_bar:
+            continue  # entry bar: pre-entry prices are included in its high/low
+        try:
+            o = float(candle["open"])
+            h = float(candle["high"])
+            l = float(candle["low"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if side == "BUY":
+            stop_hit, target_hit = l <= stop, h >= target
+            stop_fill = min(stop, o) - STOP_SLIPPAGE
+            target_gapped = o >= target
+        else:
+            stop_hit, target_hit = h >= stop, l <= target
+            stop_fill = max(stop, o) + STOP_SLIPPAGE
+            target_gapped = o <= target
+        if stop_hit and target_hit:
+            if target_gapped:
+                return EXIT_TAKE_PROFIT, target, bar_time
+            return EXIT_STOP_LOSS, stop_fill, bar_time
+        if stop_hit:
+            return EXIT_STOP_LOSS, stop_fill, bar_time
+        if target_hit:
+            return EXIT_TAKE_PROFIT, target, bar_time
+    return None
 
 
 def _apply_pending_profile_reset(state: dict[str, Any]) -> dict[str, Any]:
@@ -140,7 +249,12 @@ def _apply_pending_profile_reset(state: dict[str, Any]) -> dict[str, Any]:
     return fresh
 
 
-def _open_position(state: dict[str, Any], analysis: dict[str, Any], direction: str) -> None:
+def _open_position(
+    state: dict[str, Any],
+    analysis: dict[str, Any],
+    direction: str,
+    events: list[dict[str, Any]] | None = None,
+) -> None:
     signal = analysis["analysis"]
     price = float(signal["price"])
     stop = float(signal["suggested_stop_loss"])
@@ -179,11 +293,13 @@ def _open_position(state: dict[str, Any], analysis: dict[str, Any], direction: s
         "risk_budget_usd": round(risk_budget, 4),
         "stop_loss": stop,
         "take_profit": target,
-        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "opened_at": _now().isoformat(),
         "symbol": analysis.get("broker_symbol") or analysis.get("symbol") or "US500",
     }
     state["last_action"] = f"OPEN_{direction}"
     state["last_reason"] = signal.get("reason")
+    if events is not None:
+        events.append({"event": "OPEN", **state["position"], "reason": signal.get("reason")})
 
 
 def _iso_to_epoch_seconds(value: Any) -> int | None:
@@ -239,30 +355,42 @@ def run_cycle() -> dict[str, Any]:
     confidence = float(signal.get("confidence") or 0.0)
     floor = float(signal.get("confidence_floor") or 1.0)
 
+    events: list[dict[str, Any]] = []
     pos = state.get("position")
-    if pos and price > 0:
-        side = pos["side"]
-        stop = float(pos["stop_loss"])
-        target = float(pos["take_profit"])
-        hit_stop = (side == "BUY" and price <= stop) or (side == "SELL" and price >= stop)
-        hit_target = (side == "BUY" and price >= target) or (side == "SELL" and price <= target)
-        opposite = (side == "BUY" and decision == "SELL") or (side == "SELL" and decision == "BUY")
-        if hit_stop:
-            _close_position(state, price, "paper stop-loss reached")
-        elif hit_target:
-            _close_position(state, price, "paper take-profit reached")
-        elif opposite and confidence >= floor:
-            _close_position(state, price, f"strong opposite {decision} signal")
+    if pos:
+        hit = _find_protective_exit(pos, analysis.get("candles"))
+        if hit:
+            code, fill, bar_time = hit
+            _close_position(state, fill, EXIT_TEXT[code], code, events, trigger_bar_time=bar_time)
+        elif price > 0:
+            side = pos["side"]
+            stop = float(pos["stop_loss"])
+            target = float(pos["take_profit"])
+            hit_stop = (side == "BUY" and price <= stop) or (side == "SELL" and price >= stop)
+            hit_target = (side == "BUY" and price >= target) or (side == "SELL" and price <= target)
+            opposite = (side == "BUY" and decision == "SELL") or (side == "SELL" and decision == "BUY")
+            if hit_stop:
+                # No bar data to place the fill: use the cycle price (conservative).
+                _close_position(state, price, EXIT_TEXT[EXIT_STOP_LOSS], EXIT_STOP_LOSS, events)
+            elif hit_target:
+                _close_position(state, price, EXIT_TEXT[EXIT_TAKE_PROFIT], EXIT_TAKE_PROFIT, events)
+            elif opposite and confidence >= floor:
+                _close_position(
+                    state, price, f"strong opposite {decision} signal", EXIT_OPPOSITE_SIGNAL, events
+                )
+            else:
+                state["last_action"] = "HOLD"
+                state["last_reason"] = "Existing paper position retained"
         else:
             state["last_action"] = "HOLD"
-            state["last_reason"] = "Existing paper position retained"
+            state["last_reason"] = "No valid price; paper position retained"
 
     state = _apply_pending_profile_reset(state)
 
     if state.get("position") is None and bool(analysis.get("shadow_actionable")):
         direction = str(analysis.get("final_decision") or "NO_TRADE")
         if direction in {"BUY", "SELL"}:
-            _open_position(state, analysis, direction)
+            _open_position(state, analysis, direction, events)
         elif state.get("last_action") == "INIT":
             state["last_action"] = "NO_ACTION"
     elif state.get("position") is None and state.get("last_action") == "INIT":
@@ -283,9 +411,10 @@ def run_cycle() -> dict[str, Any]:
     state["broker_symbol"] = analysis.get("broker_symbol")
     state["market_price"] = analysis.get("market_price") or price
     state["market_updated_at"] = analysis.get("market_updated_at")
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state["updated_at"] = _now().isoformat()
     state["profile_id"] = PROFILE_ID
     _save_state(state)
+    _journal(events)
 
     candles = _decorate_candles(analysis.get("candles") or [], state)
 
@@ -301,6 +430,9 @@ def run_cycle() -> dict[str, Any]:
         "shadow_actionable": analysis.get("shadow_actionable"),
         "last_action": state.get("last_action"),
         "last_reason": state.get("last_reason"),
+        "last_exit_reason": state.get("last_exit_reason"),
+        "events": events,
+        "state_persistent": _state_is_persistent(),
         "balance": state.get("balance"),
         "equity": state.get("equity"),
         "realized_pnl": state.get("realized_pnl"),
