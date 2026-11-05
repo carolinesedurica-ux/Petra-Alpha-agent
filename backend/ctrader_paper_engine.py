@@ -1,0 +1,338 @@
+"""Autonomous cTrader paper-trading engine for Petra.
+
+Consumes Petra's existing cTrader autonomous shadow analysis and maintains a
+local simulated position state. This module never imports or sends cTrader order
+submission messages and cannot place, modify, or close broker orders.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent
+STATE_FILE = Path(os.environ.get("PETRA_CTRADER_PAPER_STATE_FILE") or "/tmp/petra_ctrader_paper_state.json")
+PROFILE_ID = (os.environ.get("PETRA_CTRADER_PAPER_PROFILE_ID") or "usd100-min10-v1").strip()
+STARTING_BALANCE = float(os.environ.get("PETRA_CTRADER_PAPER_STARTING_BALANCE") or "100")
+MAX_RISK_PCT = max(0.05, min(2.0, float(os.environ.get("PETRA_CTRADER_PAPER_RISK_PCT") or "0.50")))
+MIN_POSITION_NOTIONAL = max(1.0, float(os.environ.get("PETRA_CTRADER_PAPER_MIN_NOTIONAL") or "10"))
+MAX_POSITION_NOTIONAL = max(MIN_POSITION_NOTIONAL, float(os.environ.get("PETRA_CTRADER_PAPER_MAX_NOTIONAL") or "25"))
+
+
+def _profile() -> dict[str, Any]:
+    return {
+        "profile_id": PROFILE_ID,
+        "starting_balance": round(STARTING_BALANCE, 2),
+        "risk_pct": round(MAX_RISK_PCT, 3),
+        "min_order_notional_usd": round(MIN_POSITION_NOTIONAL, 2),
+        "max_order_notional_usd": round(MAX_POSITION_NOTIONAL, 2),
+        "live_execution": False,
+    }
+
+
+def _run_analysis() -> dict[str, Any]:
+    completed = subprocess.run(
+        [sys.executable, str(ROOT / "ctrader_autonomous_bridge.py")],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=os.environ.copy(),
+        check=False,
+    )
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        raise RuntimeError("Autonomous analysis returned no data")
+    payload = json.loads(lines[-1])
+    if completed.returncode != 0 or payload.get("status") != "ok":
+        raise RuntimeError(payload.get("error") or "Autonomous analysis failed")
+    return payload
+
+
+def _default_state() -> dict[str, Any]:
+    return {
+        "mode": "ctrader_paper_autonomous",
+        "profile_id": PROFILE_ID,
+        "balance": STARTING_BALANCE,
+        "equity": STARTING_BALANCE,
+        "realized_pnl": 0.0,
+        "wins": 0,
+        "losses": 0,
+        "cycles": 0,
+        "position": None,
+        "trade_history": [],
+        "last_action": "INIT",
+        "updated_at": None,
+    }
+
+
+def _load_state() -> dict[str, Any]:
+    try:
+        if STATE_FILE.exists():
+            data = json.loads(STATE_FILE.read_text())
+            if isinstance(data, dict):
+                data.setdefault("trade_history", [])
+                if data.get("profile_id") != PROFILE_ID:
+                    if data.get("position"):
+                        data["pending_profile_reset"] = True
+                        data["target_profile_id"] = PROFILE_ID
+                        return data
+                    fresh = _default_state()
+                    fresh["trade_history"] = list(data.get("trade_history") or [])[:20]
+                    fresh["last_action"] = "PROFILE_RESET"
+                    fresh["last_reason"] = "Applied new $100 paper-capital profile"
+                    return fresh
+                return data
+    except Exception:
+        pass
+    return _default_state()
+
+
+def _save_state(state: dict[str, Any]) -> None:
+    STATE_FILE.write_text(json.dumps(state, sort_keys=True))
+
+
+def _close_position(state: dict[str, Any], price: float, reason: str) -> None:
+    pos = state.get("position")
+    if not pos:
+        return
+    side = pos["side"]
+    entry = float(pos["entry_price"])
+    qty = float(pos["quantity"])
+    pnl = (price - entry) * qty if side == "BUY" else (entry - price) * qty
+    state["balance"] = round(float(state.get("balance", STARTING_BALANCE)) + pnl, 6)
+    state["realized_pnl"] = round(float(state.get("realized_pnl", 0.0)) + pnl, 6)
+    if pnl >= 0:
+        state["wins"] = int(state.get("wins", 0)) + 1
+    else:
+        state["losses"] = int(state.get("losses", 0)) + 1
+    closed_at = datetime.now(timezone.utc).isoformat()
+    closed = {
+        "side": side,
+        "symbol": pos.get("symbol") or "US500",
+        "entry_price": entry,
+        "exit_price": price,
+        "quantity": qty,
+        "notional_usd": pos.get("notional_usd"),
+        "pnl": round(pnl, 6),
+        "reason": reason,
+        "opened_at": pos.get("opened_at"),
+        "closed_at": closed_at,
+    }
+    state["last_action"] = "CLOSE"
+    state["last_close"] = closed
+    history = list(state.get("trade_history") or [])
+    state["trade_history"] = [closed, *history][:20]
+    state["position"] = None
+
+
+def _apply_pending_profile_reset(state: dict[str, Any]) -> dict[str, Any]:
+    if not state.get("pending_profile_reset") or state.get("position"):
+        return state
+    history = list(state.get("trade_history") or [])[:20]
+    fresh = _default_state()
+    fresh["trade_history"] = history
+    fresh["last_action"] = "PROFILE_RESET"
+    fresh["last_reason"] = "Applied $100 paper-capital profile after prior paper position closed"
+    return fresh
+
+
+def _open_position(state: dict[str, Any], analysis: dict[str, Any], direction: str) -> None:
+    signal = analysis["analysis"]
+    price = float(signal["price"])
+    stop = float(signal["suggested_stop_loss"])
+    target = float(signal["suggested_take_profit"])
+    stop_distance = abs(price - stop)
+    if stop_distance <= 0 or price <= 0:
+        state["last_action"] = "NO_ACTION"
+        state["last_reason"] = "Invalid paper price or stop distance"
+        return
+
+    balance = float(state.get("balance", STARTING_BALANCE))
+    risk_budget = max(0.01, balance * (MAX_RISK_PCT / 100.0))
+    risk_qty = risk_budget / stop_distance
+    risk_limited_notional = max(0.0, risk_qty * price)
+
+    if risk_limited_notional < MIN_POSITION_NOTIONAL:
+        state["last_action"] = "NO_ACTION"
+        state["last_reason"] = (
+            f"Safe risk capacity ${risk_limited_notional:.2f} is below the "
+            f"${MIN_POSITION_NOTIONAL:.2f} minimum paper order; trade skipped"
+        )
+        return
+
+    selected_notional = min(MAX_POSITION_NOTIONAL, risk_limited_notional)
+    qty = selected_notional / price
+    if qty <= 0:
+        state["last_action"] = "NO_ACTION"
+        state["last_reason"] = "Calculated paper quantity is zero"
+        return
+
+    state["position"] = {
+        "side": direction,
+        "entry_price": price,
+        "quantity": round(qty, 8),
+        "notional_usd": round(selected_notional, 2),
+        "risk_budget_usd": round(risk_budget, 4),
+        "stop_loss": stop,
+        "take_profit": target,
+        "opened_at": datetime.now(timezone.utc).isoformat(),
+        "symbol": analysis.get("broker_symbol") or analysis.get("symbol") or "US500",
+    }
+    state["last_action"] = f"OPEN_{direction}"
+    state["last_reason"] = signal.get("reason")
+
+
+def _iso_to_epoch_seconds(value: Any) -> int | None:
+    if not value:
+        return None
+    try:
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return None
+
+
+def _decorate_candles(candles: list[dict[str, Any]], state: dict[str, Any]) -> list[dict[str, Any]]:
+    out = [dict(c) for c in (candles or [])]
+    if not out:
+        return out
+
+    def attach(kind: str, side: str, price: float, when: Any, pnl: float | None = None) -> None:
+        ts = _iso_to_epoch_seconds(when)
+        if ts is None:
+            return
+        nearest = min(
+            range(len(out)),
+            key=lambda i: abs(int(out[i].get("time") or 0) - ts),
+        )
+        marker = {
+            "kind": kind,
+            "side": side,
+            "price": round(float(price), 5),
+            "time": ts,
+        }
+        if pnl is not None:
+            marker["pnl"] = round(float(pnl), 6)
+        out[nearest].setdefault("markers", []).append(marker)
+
+    for trade in list(state.get("trade_history") or [])[:10]:
+        attach("ENTRY", str(trade.get("side") or ""), float(trade.get("entry_price") or 0), trade.get("opened_at"))
+        attach("EXIT", str(trade.get("side") or ""), float(trade.get("exit_price") or 0), trade.get("closed_at"), float(trade.get("pnl") or 0))
+
+    pos = state.get("position")
+    if pos:
+        attach("ENTRY", str(pos.get("side") or ""), float(pos.get("entry_price") or 0), pos.get("opened_at"))
+
+    return out
+
+
+def run_cycle() -> dict[str, Any]:
+    analysis = _run_analysis()
+    state = _load_state()
+    state["cycles"] = int(state.get("cycles", 0)) + 1
+    signal = analysis.get("analysis") or {}
+    price = float(signal.get("price") or 0.0)
+    decision = str(signal.get("decision") or "NO_TRADE")
+    confidence = float(signal.get("confidence") or 0.0)
+    floor = float(signal.get("confidence_floor") or 1.0)
+
+    pos = state.get("position")
+    if pos and price > 0:
+        side = pos["side"]
+        stop = float(pos["stop_loss"])
+        target = float(pos["take_profit"])
+        hit_stop = (side == "BUY" and price <= stop) or (side == "SELL" and price >= stop)
+        hit_target = (side == "BUY" and price >= target) or (side == "SELL" and price <= target)
+        opposite = (side == "BUY" and decision == "SELL") or (side == "SELL" and decision == "BUY")
+        if hit_stop:
+            _close_position(state, price, "paper stop-loss reached")
+        elif hit_target:
+            _close_position(state, price, "paper take-profit reached")
+        elif opposite and confidence >= floor:
+            _close_position(state, price, f"strong opposite {decision} signal")
+        else:
+            state["last_action"] = "HOLD"
+            state["last_reason"] = "Existing paper position retained"
+
+    state = _apply_pending_profile_reset(state)
+
+    if state.get("position") is None and bool(analysis.get("shadow_actionable")):
+        direction = str(analysis.get("final_decision") or "NO_TRADE")
+        if direction in {"BUY", "SELL"}:
+            _open_position(state, analysis, direction)
+        elif state.get("last_action") == "INIT":
+            state["last_action"] = "NO_ACTION"
+    elif state.get("position") is None and state.get("last_action") == "INIT":
+        state["last_action"] = "NO_ACTION"
+        state["last_reason"] = signal.get("reason") or "No actionable setup"
+
+    pos = state.get("position")
+    unrealized = 0.0
+    if pos and price > 0:
+        entry = float(pos["entry_price"])
+        qty = float(pos["quantity"])
+        unrealized = (price - entry) * qty if pos["side"] == "BUY" else (entry - price) * qty
+    state["equity"] = round(float(state.get("balance", STARTING_BALANCE)) + unrealized, 6)
+    state["unrealized_pnl"] = round(unrealized, 6)
+    state["analysis_decision"] = decision
+    state["analysis_confidence"] = confidence
+    state["broker_account_id"] = analysis.get("account_id")
+    state["broker_symbol"] = analysis.get("broker_symbol")
+    state["market_price"] = analysis.get("market_price") or price
+    state["market_updated_at"] = analysis.get("market_updated_at")
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    state["profile_id"] = PROFILE_ID
+    _save_state(state)
+
+    candles = _decorate_candles(analysis.get("candles") or [], state)
+
+    return {
+        "status": "ok",
+        "mode": "ctrader_paper_autonomous",
+        "orders_enabled": False,
+        "broker_execution": False,
+        "paper_profile": _profile(),
+        "analysis_decision": decision,
+        "analysis_confidence": confidence,
+        "final_decision": analysis.get("final_decision"),
+        "shadow_actionable": analysis.get("shadow_actionable"),
+        "last_action": state.get("last_action"),
+        "last_reason": state.get("last_reason"),
+        "balance": state.get("balance"),
+        "equity": state.get("equity"),
+        "realized_pnl": state.get("realized_pnl"),
+        "unrealized_pnl": state.get("unrealized_pnl"),
+        "wins": state.get("wins"),
+        "losses": state.get("losses"),
+        "cycles": state.get("cycles"),
+        "position": state.get("position"),
+        "trade_history": state.get("trade_history") or [],
+        "market_price": analysis.get("market_price") or price,
+        "market_updated_at": analysis.get("market_updated_at"),
+        "bar_period": analysis.get("bar_period") or "M5",
+        "candles": candles,
+        "updated_at": state.get("updated_at"),
+    }
+
+
+def main() -> int:
+    try:
+        result = run_cycle()
+    except Exception as exc:
+        print(json.dumps({
+            "status": "error",
+            "mode": "ctrader_paper_autonomous",
+            "orders_enabled": False,
+            "broker_execution": False,
+            "error": f"{type(exc).__name__}: {exc}",
+        }, sort_keys=True))
+        return 1
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

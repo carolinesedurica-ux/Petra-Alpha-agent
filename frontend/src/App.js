@@ -7,6 +7,7 @@ import {
   getAccount, getPositions, getTrades, getDecisions, getPnl, getStatus,
   getConfig, updateConfig, runCycle, pauseAgent, closePosition, getOrders,
   getModels, getMarketLive, getAuthStatus, setOperatorToken,
+  getCTraderStatus, getCTraderSnapshot,
 } from "@/lib/api";
 import { HeaderTerminal } from "@/components/HeaderTerminal";
 import { MetricsRibbon } from "@/components/MetricsRibbon";
@@ -23,6 +24,7 @@ import { MarketTickerStrip } from "@/components/MarketTickerStrip";
 import { TradeWindow } from "@/components/TradeWindow";
 import { TradingPlatform } from "@/components/TradingPlatform";
 import { BotActivityFeed } from "@/components/BotActivityFeed";
+import { CTraderReadOnlyDashboard } from "@/components/CTraderReadOnlyDashboard";
 import { ScrollText, ShieldCheck, History, Receipt, LayoutGrid } from "lucide-react";
 
 const useLive = (key, fn, interval = 8000, enabled = true) =>
@@ -38,16 +40,43 @@ function App() {
   });
   const apiEnabled = auth?.authenticated === true;
 
-  const { data: account } = useLive("account", getAccount, 8000, apiEnabled);
-  const { data: positions } = useLive("positions", getPositions, 8000, apiEnabled);
-  const { data: trades } = useLive("trades", getTrades, 12000, apiEnabled);
-  const { data: decisions } = useLive("decisions", getDecisions, 6000, apiEnabled);
-  const { data: pnl } = useLive("pnl", getPnl, 12000, apiEnabled);
-  const { data: orders } = useLive("orders", getOrders, 6000, apiEnabled);
-  const { data: status } = useLive("status", getStatus, 6000, apiEnabled);
-  const { data: liveMarket } = useLive("market-live", getMarketLive, 10000, apiEnabled);
-  const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig, enabled: apiEnabled });
-  const { data: llm } = useQuery({ queryKey: ["models"], queryFn: getModels, enabled: apiEnabled });
+  const {
+    data: ctraderStatus,
+    isLoading: ctraderStatusLoading,
+  } = useQuery({
+    queryKey: ["ctrader-status"],
+    queryFn: getCTraderStatus,
+    enabled: apiEnabled,
+    retry: false,
+    refetchInterval: 15000,
+  });
+
+  const ctraderSelected = ctraderStatus?.broker_provider === "ctrader";
+  const legacyEnabled = apiEnabled && !!ctraderStatus && !ctraderSelected;
+
+  const {
+    data: ctraderSnapshot,
+    isLoading: ctraderSnapshotLoading,
+    error: ctraderSnapshotError,
+    refetch: refetchCTraderSnapshot,
+  } = useQuery({
+    queryKey: ["ctrader-snapshot"],
+    queryFn: getCTraderSnapshot,
+    enabled: apiEnabled && ctraderSelected,
+    retry: false,
+    refetchInterval: 15000,
+  });
+
+  const { data: account } = useLive("account", getAccount, 8000, legacyEnabled);
+  const { data: positions } = useLive("positions", getPositions, 8000, legacyEnabled);
+  const { data: trades } = useLive("trades", getTrades, 12000, legacyEnabled);
+  const { data: decisions } = useLive("decisions", getDecisions, 6000, legacyEnabled);
+  const { data: pnl } = useLive("pnl", getPnl, 12000, legacyEnabled);
+  const { data: orders } = useLive("orders", getOrders, 6000, legacyEnabled);
+  const { data: status } = useLive("status", getStatus, 6000, legacyEnabled);
+  const { data: liveMarket } = useLive("market-live", getMarketLive, 10000, legacyEnabled);
+  const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig, enabled: legacyEnabled });
+  const { data: llm } = useQuery({ queryKey: ["models"], queryFn: getModels, enabled: legacyEnabled });
 
   const [loginToken, setLoginToken] = useState("");
   const [loginError, setLoginError] = useState("");
@@ -56,11 +85,9 @@ function App() {
   const [payoff, setPayoff] = useState(null);
   const [closingId, setClosingId] = useState(null);
 
-  // Manual Trade Modal state (upstream feature)
   const [manualTradeOpen, setManualTradeOpen] = useState(false);
   const [manualTradeData, setManualTradeData] = useState(null);
 
-  // Client-side cache to guarantee agent cycle outcomes stay permanently in view
   const [localDecisions, setLocalDecisions] = useState(() => {
     try {
       const saved = localStorage.getItem("petra_decisions_v2");
@@ -90,7 +117,6 @@ function App() {
     setManualTradeOpen(true);
   };
 
-  // Trade Window state (our new feature)
   const [tradeOpen, setTradeOpen] = useState(false);
   const [tradeSymbol, setTradeSymbol] = useState(null);
 
@@ -219,11 +245,30 @@ function App() {
     );
   }
 
+  if (ctraderStatusLoading || !ctraderStatus) {
+    return (
+      <div className="min-h-screen grain flex items-center justify-center bg-[#070b12] text-slate-300 font-mono">
+        PETRA · CHECKING BROKER RUNTIME…
+      </div>
+    );
+  }
+
+  if (ctraderSelected) {
+    return (
+      <CTraderReadOnlyDashboard
+        status={ctraderStatus}
+        snapshot={ctraderSnapshot}
+        loading={ctraderSnapshotLoading}
+        error={ctraderSnapshotError}
+        onRefresh={() => refetchCTraderSnapshot()}
+      />
+    );
+  }
+
   return (
     <div data-testid="trading-terminal-root" className="min-h-screen grain">
       <Toaster theme="dark" position="top-right" toastOptions={{ style: { background: "#0c111a", border: "1px solid rgba(255,255,255,0.1)", color: "#e2e8f0", fontFamily: "JetBrains Mono", fontSize: 12 } }} />
 
-      {/* ── Header ── */}
       <HeaderTerminal
         account={account} status={status} agent={status?.agent} llm={llm}
         onRunCycle={() => cycleMut.mutate()} onPause={(p) => pauseMut.mutate(p)}
@@ -232,7 +277,6 @@ function App() {
         onOpenTrade={() => openTrade(null)}
         cycling={cycleMut.isPending} />
 
-      {/* ── Live Market Ticker Strip ── */}
       <MarketTickerStrip liveMarket={liveMarket} onSymbolClick={openTrade} />
 
       <main className="mx-auto max-w-[1600px] px-4 sm:px-6 py-5 space-y-5 relative z-10">
@@ -246,7 +290,6 @@ function App() {
           </div>
           <div className="xl:col-span-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-1 gap-5">
             <AgentReasoningPanel decisions={(decisions || []).slice(0, 30)} showGate={false} title="Live Decision Engine" onTradeOpportunity={handleOpenManualTrade} />
-            {/* Bot Activity Feed */}
             <BotActivityFeed decisions={decisions} />
             <AskAgentChat />
           </div>
@@ -291,7 +334,6 @@ function App() {
         </footer>
       </main>
 
-      {/* ── Modals ── */}
       <RiskConfigModal open={riskOpen} onOpenChange={setRiskOpen} config={config} onSave={saveConfig} />
       <SpreadPayoffModal position={payoff} open={!!payoff} onOpenChange={(o) => !o && setPayoff(null)} />
 
@@ -302,7 +344,6 @@ function App() {
         onSuccess={refetchAll}
       />
 
-      {/* ── Trade Window (slide-over) ── */}
       <TradeWindow
         open={tradeOpen}
         onClose={() => setTradeOpen(false)}
